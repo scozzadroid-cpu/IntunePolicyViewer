@@ -338,6 +338,10 @@
           <Setter TargetName="b" Property="Background" Value="#DDF5EF"/>
           <Setter TargetName="t" Property="Foreground" Value="#0F766E"/>
         </DataTrigger>
+        <DataTrigger Binding="{Binding SourceKind}" Value="EFF">
+          <Setter TargetName="b" Property="Background" Value="#FEF3C7"/>
+          <Setter TargetName="t" Property="Foreground" Value="#B45309"/>
+        </DataTrigger>
       </DataTemplate.Triggers>
     </DataTemplate>
 
@@ -417,6 +421,8 @@
         <TextBlock Text="POLICY" Foreground="#56627A" FontSize="10.5" FontWeight="SemiBold" Margin="28,18,0,6"/>
         <RadioButton x:Name="NavUser" Style="{StaticResource NavButton}" Tag="&#xE77B;" Content="Utente"/>
         <RadioButton x:Name="NavMachine" Style="{StaticResource NavButton}" Tag="&#xE7F8;" Content="Macchina"/>
+        <RadioButton x:Name="NavSecurity" Style="{StaticResource NavButton}" Tag="&#xE72E;" Content="Sicurezza"/>
+        <RadioButton x:Name="NavDefender" Style="{StaticResource NavButton}" Tag="&#xE83D;" Content="Defender"/>
         <RadioButton x:Name="NavUpdates" Style="{StaticResource NavButton}" Tag="&#xE895;" Content="Aggiornamenti"/>
         <TextBlock Text="WINDOWS UPDATE" Foreground="#56627A" FontSize="10.5" FontWeight="SemiBold" Margin="28,18,0,6"/>
         <RadioButton x:Name="NavHistory" Style="{StaticResource NavButton}" Tag="&#xE81C;" Content="Cronologia"/>
@@ -445,7 +451,7 @@
 
     <Grid x:Name="Toolbar" Grid.Row="1" Margin="32,0,32,16" Visibility="Collapsed">
       <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="360"/>
+        <ColumnDefinition Width="300"/>
         <ColumnDefinition Width="*"/>
         <ColumnDefinition Width="Auto"/>
       </Grid.ColumnDefinitions>
@@ -456,6 +462,7 @@
         <RadioButton x:Name="ChipGpo" Style="{StaticResource Chip}" Tag="GPO" Content="GPO"/>
         <RadioButton x:Name="ChipReg" Style="{StaticResource Chip}" Tag="REG" Content="Registro"/>
         <RadioButton x:Name="ChipWu" Style="{StaticResource Chip}" Tag="WU" Content="Windows Update"/>
+        <RadioButton x:Name="ChipEff" Style="{StaticResource Chip}" Tag="EFF" Content="Stato effettivo"/>
       </StackPanel>
       <TextBlock x:Name="CountText" Grid.Column="2" Foreground="{StaticResource TextMuted}" VerticalAlignment="Center" FontSize="12.5"/>
     </Grid>
@@ -479,7 +486,7 @@
 
         <Grid Margin="0,0,-16,16">
           <Grid.ColumnDefinitions>
-            <ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/>
+            <ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/>
           </Grid.ColumnDefinitions>
           <Border x:Name="CardUser" Style="{StaticResource StatCard}">
             <StackPanel>
@@ -501,7 +508,17 @@
               <TextBlock x:Name="StatMachineSub" Foreground="#64748B" FontSize="12" Margin="0,2,0,0" TextWrapping="Wrap"/>
             </StackPanel>
           </Border>
-          <Border x:Name="CardUpdates" Grid.Column="2" Style="{StaticResource StatCard}">
+          <Border x:Name="CardSecurity" Grid.Column="2" Style="{StaticResource StatCard}">
+            <StackPanel>
+              <Border Width="36" Height="36" CornerRadius="18" Background="#FEE2E2" HorizontalAlignment="Left">
+                <TextBlock Text="&#xE72E;" FontFamily="Segoe MDL2 Assets" Foreground="#B91C1C" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              </Border>
+              <TextBlock x:Name="StatSecurity" Text="–" FontSize="30" FontWeight="SemiBold" Foreground="#0F172A" Margin="0,12,0,0"/>
+              <TextBlock Text="Policy sicurezza" Foreground="#334155" FontWeight="SemiBold"/>
+              <TextBlock x:Name="StatSecuritySub" Foreground="#64748B" FontSize="12" Margin="0,2,0,0" TextWrapping="Wrap"/>
+            </StackPanel>
+          </Border>
+          <Border x:Name="CardUpdates" Grid.Column="3" Style="{StaticResource StatCard}">
             <StackPanel>
               <Border Width="36" Height="36" CornerRadius="18" Background="#DDF5EF" HorizontalAlignment="Left">
                 <TextBlock Text="&#xE895;" FontFamily="Segoe MDL2 Assets" Foreground="#0F766E" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/>
@@ -511,7 +528,7 @@
               <TextBlock x:Name="StatUpdatesSub" Foreground="#64748B" FontSize="12" Margin="0,2,0,0" TextWrapping="Wrap"/>
             </StackPanel>
           </Border>
-          <Border x:Name="CardHistory" Grid.Column="3" Style="{StaticResource StatCard}">
+          <Border x:Name="CardHistory" Grid.Column="4" Style="{StaticResource StatCard}">
             <StackPanel>
               <Border Width="36" Height="36" CornerRadius="18" Background="#FEF3C7" HorizontalAlignment="Left">
                 <TextBlock Text="&#xE81C;" FontFamily="Segoe MDL2 Assets" Foreground="#B45309" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/>
@@ -541,10 +558,25 @@
           </Border>
         </Grid>
 
-        <Grid>
+        <Grid Margin="0,0,0,16">
           <Grid.ColumnDefinitions>
             <ColumnDefinition/><ColumnDefinition Width="16"/><ColumnDefinition/>
           </Grid.ColumnDefinitions>
+          <Border Style="{StaticResource Card}">
+            <StackPanel>
+              <TextBlock Text="Sicurezza in breve" Style="{StaticResource CardTitle}"/>
+              <ItemsControl x:Name="SecuritySummaryList" ItemTemplate="{StaticResource InfoRowTemplate}"/>
+            </StackPanel>
+          </Border>
+          <Border Grid.Column="2" Style="{StaticResource Card}">
+            <StackPanel>
+              <TextBlock Text="Windows Update in breve" Style="{StaticResource CardTitle}"/>
+              <ItemsControl x:Name="UpdateSummaryList" ItemTemplate="{StaticResource InfoRowTemplate}"/>
+            </StackPanel>
+          </Border>
+        </Grid>
+
+        <Grid>
           <Border Style="{StaticResource Card}">
             <StackPanel>
               <TextBlock Text="Criteri di gruppo (GPO)" Style="{StaticResource CardTitle}"/>
@@ -576,12 +608,6 @@
               </ItemsControl>
             </StackPanel>
           </Border>
-          <Border Grid.Column="2" Style="{StaticResource Card}">
-            <StackPanel>
-              <TextBlock Text="Windows Update in breve" Style="{StaticResource CardTitle}"/>
-              <ItemsControl x:Name="UpdateSummaryList" ItemTemplate="{StaticResource InfoRowTemplate}"/>
-            </StackPanel>
-          </Border>
         </Grid>
       </StackPanel>
     </ScrollViewer>
@@ -592,16 +618,16 @@
         <RowDefinition Height="Auto"/>
         <RowDefinition Height="*"/>
       </Grid.RowDefinitions>
-      <ItemsControl x:Name="UpdateCards" Visibility="Collapsed" Margin="0,0,0,4">
+      <ItemsControl x:Name="StatusCards" Visibility="Collapsed" Margin="0,0,0,4">
         <ItemsControl.ItemsPanel>
           <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
         </ItemsControl.ItemsPanel>
         <ItemsControl.ItemTemplate>
           <DataTemplate>
-            <Border Background="White" BorderBrush="#E5E9F0" BorderThickness="1" CornerRadius="10" Padding="14,10" Margin="0,0,12,12" MinWidth="180" MaxWidth="360">
+            <Border Background="White" BorderBrush="#E5E9F0" BorderThickness="1" CornerRadius="8" Padding="12,7" Margin="0,0,8,8" MinWidth="150" MaxWidth="340">
               <StackPanel>
                 <TextBlock Text="{Binding Label}" Foreground="#64748B" FontSize="11.5"/>
-                <TextBlock Text="{Binding Value}" Foreground="#0F172A" FontSize="14" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                <TextBlock Text="{Binding Value}" Foreground="#0F172A" FontSize="13" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,2,0,0"/>
               </StackPanel>
             </Border>
           </DataTemplate>
@@ -611,7 +637,7 @@
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="*"/>
           <ColumnDefinition Width="16"/>
-          <ColumnDefinition Width="390"/>
+          <ColumnDefinition Width="350"/>
         </Grid.ColumnDefinitions>
         <Border Style="{StaticResource Card}" Padding="0" ClipToBounds="True">
           <Grid>

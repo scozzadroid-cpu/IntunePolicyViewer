@@ -91,6 +91,8 @@ namespace PolicyViewer
         public string Details { get; set; }
         public string Path { get; set; }
         public bool IsUpdate { get; set; }
+        public bool IsSecurity { get; set; }
+        public bool IsDefender { get; set; }
 
         public string DescriptionText { get { return string.IsNullOrEmpty(Description) ? "—" : Description; } }
 
@@ -144,12 +146,16 @@ namespace PolicyViewer
         public List<InfoRow> Management = new List<InfoRow>();
         public List<GpoInfo> Gpos = new List<GpoInfo>();
         public List<InfoRow> UpdateStatus = new List<InfoRow>();
+        public List<InfoRow> SecurityStatus = new List<InfoRow>();
+        public List<InfoRow> DefenderStatus = new List<InfoRow>();
         public List<HistoryItem> History = new List<HistoryItem>();
         public List<string> Warnings = new List<string>();
         public Dictionary<string, string> Providers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-        public IEnumerable<PolicyItem> UserItems { get { return Items.Where(i => i.Scope == "Utente" && !i.IsUpdate); } }
-        public IEnumerable<PolicyItem> MachineItems { get { return Items.Where(i => i.Scope == "Macchina" && !i.IsUpdate); } }
+        public IEnumerable<PolicyItem> UserItems { get { return Items.Where(i => i.Scope == "Utente" && !i.IsUpdate && !i.IsSecurity); } }
+        public IEnumerable<PolicyItem> MachineItems { get { return Items.Where(i => i.Scope == "Macchina" && !i.IsUpdate && !i.IsSecurity); } }
+        public IEnumerable<PolicyItem> SecurityItems { get { return Items.Where(i => i.IsSecurity && !i.IsDefender && !i.IsUpdate); } }
+        public IEnumerable<PolicyItem> DefenderItems { get { return Items.Where(i => i.IsDefender && !i.IsUpdate); } }
         public IEnumerable<PolicyItem> UpdateItems { get { return Items.Where(i => i.IsUpdate); } }
     }
 
@@ -199,6 +205,11 @@ namespace PolicyViewer
                 CollectRegistry(s, Registry.Users, "HKU\\" + s.UserSid, s.UserSid + @"\Software\Policies", "", "Utente");
                 CollectRegistry(s, Registry.Users, "HKU\\" + s.UserSid, s.UserSid + @"\Software\Microsoft\Windows\CurrentVersion\Policies", "CurrentVersion\\Policies\\", "Utente");
             });
+            Step(s, progress, "Lettura regole firewall Intune", delegate { Security.CollectFirewallMdm(s); });
+            Step(s, progress, "Lettura configurazione effettiva di Microsoft Defender", delegate { Security.CollectDefender(s); });
+            if (s.IsAdmin) Step(s, progress, "Lettura criteri di sicurezza locali (secedit)", delegate { Security.CollectSecedit(s); });
+            else s.Warnings.Add("Esecuzione senza privilegi di amministratore: criteri di sicurezza locali (account, controllo, diritti utente) e stato BitLocker/TPM non disponibili.");
+            Step(s, progress, "Stato della sicurezza", delegate { Security.BuildStatus(s); });
             Step(s, progress, "Lettura stato di Windows Update", delegate { CollectUpdateState(s); });
             Step(s, progress, "Lettura cronologia di Windows Update", delegate { CollectUpdateHistory(s); });
             Step(s, progress, "Riepilogo Windows Update", delegate { BuildUpdateStatus(s); });
@@ -212,6 +223,7 @@ namespace PolicyViewer
                 if (gpUser != null) ParseGp(s, gpUser, "UserResults", "Utente");
                 else s.Warnings.Add("GPO utente non disponibili: " + gpUserErr);
             });
+            foreach (var i in s.Items) i.IsDefender = Security.IsDefender(i);
             return s;
         }
 
@@ -449,6 +461,7 @@ namespace PolicyViewer
                 Details = details.ToString().TrimEnd(),
                 Path = path + "\\" + name,
                 IsUpdate = isUpdate,
+                IsSecurity = Security.IsSecurityArea(area),
             });
         }
 
@@ -526,6 +539,7 @@ namespace PolicyViewer
                         + "\n\nIl registro mostra il valore effettivo ma non chi l'ha scritto: confrontare con le schede Intune e GPO.",
                     Path = fullPath + "\\" + name,
                     IsUpdate = isUpdate,
+                    IsSecurity = Security.IsSecurityPath(fullPath),
                 });
             }
             if (depth > 15) return;
@@ -705,6 +719,7 @@ namespace PolicyViewer
                 Details = "Estensione: " + extName + "\nTipo elemento: " + c.LocalName + "\nOggetto Criteri di gruppo: " + gpoName + "\n\n" + string.Join("\n", leaves),
                 Path = Child(c, "KeyPath") ?? Child(c, "KeyName") ?? (category != null ? category + "/" + name : extName),
                 IsUpdate = isUpdate,
+                IsSecurity = Security.IsSecurityGp(extName, category, Child(c, "KeyPath") ?? Child(c, "KeyName")),
             });
         }
 
@@ -868,7 +883,7 @@ namespace PolicyViewer
             try { return Encoding.GetEncoding(GetOEMCP()); } catch { return Encoding.Default; }
         }
 
-        static string RunProcess(string file, string args, int timeoutMs)
+        public static string RunProcess(string file, string args, int timeoutMs)
         {
             var enc = ConsoleEncoding();
             var psi = new ProcessStartInfo(file, args)
@@ -888,6 +903,560 @@ namespace PolicyViewer
                 return so.Result + se.Result;
             }
         }
+    }
+
+    #endregion
+
+    #region Sicurezza
+
+    static class Security
+    {
+        const string IntuneLabel = "Intune (MDM)";
+
+        static readonly HashSet<string> Areas = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Defender", "BitLocker", "DeviceGuard", "DmaGuard", "LocalPoliciesSecurityOptions", "LocalUsersAndGroups", "Security", "SecureBoot",
+            "WindowsDefenderSecurityCenter", "DeviceLock", "DeviceInstallation", "DataProtection", "Firewall", "LAPS", "SmartScreen",
+            "WindowsDefenderApplicationGuard", "ApplicationControl", "AppLocker", "Authentication", "CredentialProviders", "CredentialsUI",
+            "CredentialsDelegation", "Cryptography", "VirtualizationBasedTechnology", "UserRights", "Audit", "ExploitGuard", "Kerberos",
+            "LocalSecurityAuthority", "WindowsLogon", "MSSecurityGuide", "MSSLegacy", "PassportForWork", "TenantRestrictions",
+            "EnhancedStorage", "AttackSurfaceReduction", "WindowsSandbox",
+        };
+
+        public static bool IsSecurityArea(string area)
+        {
+            string a = area.StartsWith("ADMX_", StringComparison.OrdinalIgnoreCase) ? area.Substring(5) : area;
+            return Areas.Contains(a);
+        }
+
+        static readonly Regex SecurityPath = new Regex(
+            @"\\(Windows Defender|Microsoft Defender|Windows Defender Security Center|Windows Advanced Threat Protection|FVE|WindowsFirewall|PassportForWork|DeviceGuard|LAPS|SmartScreen|Biometrics|AdmPwd)(\\|$)|CurrentVersion\\Policies\\System$",
+            RegexOptions.IgnoreCase);
+
+        public static bool IsSecurityPath(string path) { return SecurityPath.IsMatch(path); }
+
+        static readonly Regex DefenderText = new Regex(@"Defender|AttackSurfaceReduction|ExploitGuard|Advanced Threat Protection", RegexOptions.IgnoreCase);
+
+        // Pagina Defender: impostazioni dell'antivirus/EDR (configurate da Intune o GPO e valori effettivi); il firewall resta in Sicurezza
+        public static bool IsDefender(PolicyItem i)
+        {
+            if (!i.IsSecurity) return false;
+            if (i.SourceKind == "EFF") return i.SourceShort == "Defender";
+            string text = i.Area + " " + i.Path;
+            return DefenderText.IsMatch(text) && text.IndexOf("Firewall", StringComparison.OrdinalIgnoreCase) < 0;
+        }
+
+        static readonly Regex SecurityCategory = new Regex(@"Defender|BitLocker|Firewall|SmartScreen|Credential|Sicurezza|Security|LAPS|Device Guard|Exploit", RegexOptions.IgnoreCase);
+
+        public static bool IsSecurityGp(string extName, string category, string key)
+        {
+            if (extName != null && Regex.IsMatch(extName, "^(Security|Windows Firewall|Public Key|Software Restriction|Advanced Audit Configuration|AppLocker)", RegexOptions.IgnoreCase)) return true;
+            if (category != null && SecurityCategory.IsMatch(category)) return true;
+            return key != null && IsSecurityPath(key);
+        }
+
+        #region Supporto
+
+        static List<ManagementBaseObject> Wmi(string ns, string query)
+        {
+            var list = new List<ManagementBaseObject>();
+            try
+            {
+                using (var srch = new ManagementObjectSearcher(ns, query))
+                    foreach (ManagementBaseObject o in srch.Get()) list.Add(o);
+            }
+            catch { }
+            return list;
+        }
+
+        static object P(ManagementBaseObject o, string name)
+        {
+            try { return o[name]; } catch { return null; }
+        }
+
+        static bool B(object v) { return v is bool && (bool)v; }
+
+        static string CimDate(object v)
+        {
+            try { return ManagementDateTimeConverter.ToDateTime((string)v).ToString("dd/MM/yyyy HH:mm"); } catch { return null; }
+        }
+
+        static void AddEff(Snapshot s, string sourceShort, string source, string area, string name, string value, string description, string details, string path)
+        {
+            s.Items.Add(new PolicyItem
+            {
+                Scope = "Macchina",
+                Source = source,
+                SourceShort = sourceShort,
+                SourceKind = "EFF",
+                Area = area,
+                Name = name,
+                Value = string.IsNullOrEmpty(value) ? "(vuoto)" : value,
+                Description = description,
+                Details = details,
+                Path = path,
+                IsSecurity = true,
+            });
+        }
+
+        #endregion
+
+        #region Firewall Intune
+
+        public static void CollectFirewallMdm(Snapshot s)
+        {
+            const string root = @"SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\Mdm";
+            using (var k = Registry.LocalMachine.OpenSubKey(root))
+            {
+                if (k == null) return;
+                AddFirewallValues(s, k, root, "");
+                foreach (string sub in k.GetSubKeyNames())
+                    using (var c = k.OpenSubKey(sub))
+                        if (c != null) AddFirewallValues(s, c, root + "\\" + sub, sub);
+            }
+        }
+
+        static void AddFirewallValues(Snapshot s, RegistryKey k, string path, string sub)
+        {
+            foreach (string vn in k.GetValueNames())
+            {
+                object raw = k.GetValue(vn);
+                string text = raw as string;
+                string name = vn, value = Collector.FormatValue(raw), details = "Chiave: HKLM\\" + path + "\nValore: " + vn;
+                if (text != null && text.StartsWith("v2.", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Formato regola: v2.32|Action=Allow|Active=TRUE|Dir=In|Protocol=6|LPort=443|App=...|Name=...|
+                    var f = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (string part in text.Split('|'))
+                    {
+                        int eq = part.IndexOf('=');
+                        if (eq <= 0) continue;
+                        string key = part.Substring(0, eq), val = part.Substring(eq + 1);
+                        f[key] = f.ContainsKey(key) ? f[key] + ", " + val : val;
+                    }
+                    string v;
+                    if (f.TryGetValue("Name", out v)) name = v;
+                    var parts = new List<string>();
+                    if (f.TryGetValue("Action", out v)) parts.Add(v == "Allow" ? "Consenti" : v == "Block" ? "Blocca" : v);
+                    if (f.TryGetValue("Dir", out v)) parts.Add(v == "In" ? "In ingresso" : v == "Out" ? "In uscita" : v);
+                    if (f.TryGetValue("Protocol", out v)) parts.Add(v == "6" ? "TCP" : v == "17" ? "UDP" : v == "1" ? "ICMP" : "protocollo " + v);
+                    if (f.TryGetValue("LPort", out v)) parts.Add("porta locale " + v);
+                    if (f.TryGetValue("RPort", out v)) parts.Add("porta remota " + v);
+                    if (f.TryGetValue("App", out v)) parts.Add(System.IO.Path.GetFileName(v));
+                    if (f.TryGetValue("Active", out v) && v.Equals("FALSE", StringComparison.OrdinalIgnoreCase)) parts.Add("non attiva");
+                    value = string.Join("  ·  ", parts);
+                    details += "\nID regola: " + vn + "\n\n" + string.Join("\n", f.Select(x => x.Key + " = " + x.Value));
+                }
+                s.Items.Add(new PolicyItem
+                {
+                    Scope = "Macchina",
+                    Source = IntuneLabel,
+                    SourceShort = "Intune",
+                    SourceKind = "MDM",
+                    Area = "Firewall" + (sub.Length > 0 ? " · " + sub : ""),
+                    Name = name,
+                    Value = value,
+                    Description = sub == "FirewallRules" ? "Regola del firewall di Windows distribuita da Intune (CSP Firewall)." : null,
+                    Details = details,
+                    Path = "HKLM\\" + path + "\\" + vn,
+                    IsSecurity = true,
+                });
+            }
+        }
+
+        #endregion
+
+        #region Microsoft Defender
+
+        class DefPref
+        {
+            public string Name, Description;
+            public Dictionary<int, string> Map;
+            public DefPref(string name, string description, Dictionary<int, string> map) { Name = name; Description = description; Map = map; }
+        }
+
+        static readonly Dictionary<int, string> OffOnAudit = new Dictionary<int, string> { { 0, "Disattivata" }, { 1, "Attiva (blocco)" }, { 2, "Solo controllo (audit)" } };
+
+        static readonly DefPref[] DefenderPrefs =
+        {
+            new DefPref("DisableRealtimeMonitoring", "Se Sì, la protezione in tempo reale è disattivata.", null),
+            new DefPref("DisableBehaviorMonitoring", "Se Sì, il monitoraggio del comportamento è disattivato.", null),
+            new DefPref("DisableIOAVProtection", "Se Sì, file e allegati scaricati non vengono analizzati.", null),
+            new DefPref("DisableScriptScanning", "Se Sì, gli script non vengono analizzati.", null),
+            new DefPref("DisableArchiveScanning", "Se Sì, gli archivi (zip, cab…) non vengono analizzati.", null),
+            new DefPref("DisableEmailScanning", "Se Sì, i messaggi di posta non vengono analizzati.", null),
+            new DefPref("DisableRemovableDriveScanning", "Se Sì, le unità rimovibili non vengono analizzate durante l'analisi completa.", null),
+            new DefPref("PUAProtection", "Protezione dalle applicazioni potenzialmente indesiderate (PUA).", OffOnAudit),
+            new DefPref("EnableNetworkProtection", "Protezione di rete: blocca connessioni verso domini e IP malevoli.", OffOnAudit),
+            new DefPref("EnableControlledFolderAccess", "Accesso controllato alle cartelle (protezione ransomware).",
+                new Dictionary<int, string> { { 0, "Disattivato" }, { 1, "Attivo (blocco)" }, { 2, "Solo controllo (audit)" }, { 3, "Blocca solo modifiche al disco" }, { 4, "Controlla solo modifiche al disco" } }),
+            new DefPref("MAPSReporting", "Partecipazione a Microsoft MAPS (protezione cloud).",
+                new Dictionary<int, string> { { 0, "Disattivata" }, { 1, "Base" }, { 2, "Avanzata" } }),
+            new DefPref("SubmitSamplesConsent", "Invio automatico dei campioni a Microsoft.",
+                new Dictionary<int, string> { { 0, "Chiedi sempre" }, { 1, "Invia automaticamente i campioni sicuri" }, { 2, "Non inviare mai" }, { 3, "Invia automaticamente tutti i campioni" } }),
+            new DefPref("CloudBlockLevel", "Livello di blocco della protezione cloud.",
+                new Dictionary<int, string> { { 0, "Predefinito" }, { 1, "Moderato" }, { 2, "Alto" }, { 4, "Alto+" }, { 6, "Tolleranza zero" } }),
+            new DefPref("CloudExtendedTimeout", "Secondi aggiuntivi di attesa della verifica cloud prima di consentire un file.", null),
+            new DefPref("SignatureUpdateInterval", "Intervallo di controllo aggiornamenti delle firme (ore; 0 = predefinito).", null),
+            new DefPref("ScanScheduleDay", "Giorno dell'analisi pianificata.",
+                new Dictionary<int, string> { { 0, "Ogni giorno" }, { 1, "Domenica" }, { 2, "Lunedì" }, { 3, "Martedì" }, { 4, "Mercoledì" }, { 5, "Giovedì" }, { 6, "Venerdì" }, { 7, "Sabato" }, { 8, "Mai" } }),
+            new DefPref("ScanParameters", "Tipo di analisi pianificata.", new Dictionary<int, string> { { 1, "Analisi rapida" }, { 2, "Analisi completa" } }),
+            new DefPref("EnableFileHashComputation", "Calcolo dell'hash dei file per gli indicatori di compromissione.", null),
+        };
+
+        static readonly Dictionary<string, string> AsrNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            { "56a863a9-875e-4185-98a7-b882c64b5ce5", "Blocca l'abuso di driver firmati vulnerabili" },
+            { "7674ba52-37eb-4a4f-a9a1-f0f9a1619a2c", "Impedisci ad Adobe Reader di creare processi figlio" },
+            { "d4f940ab-401b-4efc-aadc-ad5f3c50688a", "Impedisci alle app Office di creare processi figlio" },
+            { "9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2", "Blocca il furto di credenziali da LSASS" },
+            { "be9ba2d9-53ea-4cdc-84e5-9b1eeee46550", "Blocca contenuti eseguibili da client di posta e webmail" },
+            { "01443614-cd74-433a-b99e-2ecdc07bfc25", "Blocca eseguibili che non soddisfano criteri di diffusione, età o attendibilità" },
+            { "5beb7efe-fd9a-4556-801d-275e5ffc04cc", "Blocca l'esecuzione di script potenzialmente offuscati" },
+            { "d3e037e1-3eb8-44c8-a917-57927947596d", "Impedisci a JavaScript/VBScript di avviare contenuti scaricati" },
+            { "3b576869-a4ec-4529-8536-b80a7769e899", "Impedisci alle app Office di creare contenuti eseguibili" },
+            { "75668c1f-73b5-4cf0-bb93-3ecf5cb7cc84", "Impedisci alle app Office di iniettare codice in altri processi" },
+            { "26190899-1602-49e8-8b27-eb1d0a1ce869", "Impedisci alle app di comunicazione Office di creare processi figlio" },
+            { "e6db77e5-3df2-4cf1-b95a-636979351e5b", "Blocca la persistenza tramite sottoscrizioni a eventi WMI" },
+            { "d1e49aac-8f56-4280-b9ba-993a6d77406c", "Blocca la creazione di processi da comandi PSExec e WMI" },
+            { "b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4", "Blocca processi non attendibili e non firmati eseguiti da USB" },
+            { "92e97fa1-2edf-4476-bdd6-9dd0b4dddc7b", "Blocca le chiamate API Win32 dalle macro di Office" },
+            { "c1db55ab-c21a-4637-bb3f-a12568109d35", "Usa la protezione avanzata contro il ransomware" },
+            { "33ddedf1-c6e0-47cb-833e-de6133960387", "Blocca il riavvio del computer in modalità provvisoria" },
+            { "c0033c00-d16d-4114-a5a0-dc9b3a7d2ceb", "Blocca l'uso di strumenti di sistema copiati o impersonati" },
+            { "a8f5898e-1dc8-49a9-9878-85004b8a61e6", "Blocca la creazione di webshell per i server" },
+        };
+
+        static readonly Dictionary<int, string> AsrActions = new Dictionary<int, string>
+        {
+            { 0, "Disattivata" }, { 1, "Blocca" }, { 2, "Controllo (audit)" }, { 5, "Non configurata" }, { 6, "Avvisa" },
+        };
+
+        const string DefenderSource = "Microsoft Defender (configurazione effettiva)";
+
+        public static void CollectDefender(Snapshot s)
+        {
+            var pref = Wmi(@"root\Microsoft\Windows\Defender", "SELECT * FROM MSFT_MpPreference").FirstOrDefault();
+            if (pref == null) return;
+            const string path = @"root\Microsoft\Windows\Defender : MSFT_MpPreference";
+
+            foreach (var d in DefenderPrefs)
+            {
+                object v = P(pref, d.Name);
+                if (v == null) continue;
+                string text;
+                if (v is bool) text = (bool)v ? "Sì" : "No";
+                else
+                {
+                    int n = Convert.ToInt32(v);
+                    string mapped;
+                    text = d.Map != null && d.Map.TryGetValue(n, out mapped) ? mapped + " (" + n + ")" : n.ToString();
+                }
+                AddEff(s, "Defender", DefenderSource, "Microsoft Defender · configurazione effettiva", d.Name, text, d.Description,
+                    "Valore effettivo letto da Defender (risultato di Intune, GPO e impostazioni locali).\nMSFT_MpPreference." + d.Name + " = " + v, path + "." + d.Name);
+            }
+
+            var ids = P(pref, "AttackSurfaceReductionRules_Ids") as string[];
+            var acts = P(pref, "AttackSurfaceReductionRules_Actions") as Array;
+            if (ids != null)
+            {
+                for (int i = 0; i < ids.Length; i++)
+                {
+                    int act = acts != null && i < acts.Length ? Convert.ToInt32(acts.GetValue(i)) : -1;
+                    string actText;
+                    if (!AsrActions.TryGetValue(act, out actText)) actText = act.ToString();
+                    string name;
+                    if (!AsrNames.TryGetValue(ids[i], out name)) name = ids[i];
+                    AddEff(s, "Defender", DefenderSource, "Riduzione della superficie di attacco (ASR)", name, actText + " (" + act + ")",
+                        "Regola di riduzione della superficie di attacco di Microsoft Defender.",
+                        "GUID regola: " + ids[i] + "\nAzione: " + act + " (0 disattivata, 1 blocca, 2 audit, 6 avvisa)", path + ".AttackSurfaceReductionRules_Ids");
+                }
+            }
+
+            foreach (string ex in new[] { "ExclusionPath", "ExclusionExtension", "ExclusionProcess", "AttackSurfaceReductionOnlyExclusions", "ControlledFolderAccessAllowedApplications" })
+            {
+                var list = P(pref, ex) as string[];
+                if (list == null || list.Length == 0) continue;
+                AddEff(s, "Defender", DefenderSource, "Microsoft Defender · esclusioni", ex, string.Join("; ", list),
+                    "Elementi esclusi dall'analisi o consentiti. Per gli utenti standard Defender non rivela il contenuto.", string.Join("\n", list), path + "." + ex);
+            }
+        }
+
+        #endregion
+
+        #region Criteri di sicurezza locali
+
+        static readonly Dictionary<string, string> SecNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            { "MinimumPasswordAge", "Validità minima della password (giorni)" },
+            { "MaximumPasswordAge", "Validità massima della password (giorni)" },
+            { "MinimumPasswordLength", "Lunghezza minima della password" },
+            { "PasswordComplexity", "La password deve rispettare i requisiti di complessità" },
+            { "PasswordHistorySize", "Cronologia delle password (numero ricordate)" },
+            { "LockoutBadCount", "Soglia di blocco dell'account (tentativi errati)" },
+            { "ResetLockoutCount", "Reimposta il contatore dei blocchi dopo (minuti)" },
+            { "LockoutDuration", "Durata del blocco dell'account (minuti)" },
+            { "AllowAdministratorLockout", "Consenti il blocco dell'account Administrator" },
+            { "RequireLogonToChangePassword", "Richiedi l'accesso per cambiare la password" },
+            { "ForceLogoffWhenHourExpire", "Disconnetti allo scadere dell'orario di accesso" },
+            { "NewAdministratorName", "Nome dell'account Administrator" },
+            { "NewGuestName", "Nome dell'account Guest" },
+            { "ClearTextPassword", "Memorizza le password con crittografia reversibile" },
+            { "LSAAnonymousNameLookup", "Consenti la traduzione anonima SID/nome" },
+            { "EnableAdminAccount", "Account Administrator abilitato" },
+            { "EnableGuestAccount", "Account Guest abilitato" },
+            { "AuditSystemEvents", "Controllo eventi di sistema" },
+            { "AuditLogonEvents", "Controllo eventi di accesso" },
+            { "AuditObjectAccess", "Controllo accesso agli oggetti" },
+            { "AuditPrivilegeUse", "Controllo uso dei privilegi" },
+            { "AuditPolicyChange", "Controllo modifica dei criteri" },
+            { "AuditAccountManage", "Controllo gestione degli account" },
+            { "AuditProcessTracking", "Controllo tracciamento dei processi" },
+            { "AuditDSAccess", "Controllo accesso al servizio directory" },
+            { "AuditAccountLogon", "Controllo eventi di accesso all'account" },
+            { "SeNetworkLogonRight", "Accedi al computer dalla rete" },
+            { "SeInteractiveLogonRight", "Consenti accesso locale" },
+            { "SeRemoteInteractiveLogonRight", "Consenti accesso tramite Desktop remoto" },
+            { "SeDenyNetworkLogonRight", "Nega accesso al computer dalla rete" },
+            { "SeDenyInteractiveLogonRight", "Nega accesso locale" },
+            { "SeDenyRemoteInteractiveLogonRight", "Nega accesso tramite Desktop remoto" },
+            { "SeDenyBatchLogonRight", "Nega accesso come processo batch" },
+            { "SeDenyServiceLogonRight", "Nega accesso come servizio" },
+            { "SeBatchLogonRight", "Accesso come processo batch" },
+            { "SeServiceLogonRight", "Accesso come servizio" },
+            { "SeBackupPrivilege", "Backup di file e directory" },
+            { "SeRestorePrivilege", "Ripristino di file e directory" },
+            { "SeDebugPrivilege", "Debug di programmi" },
+            { "SeShutdownPrivilege", "Arresto del sistema" },
+            { "SeRemoteShutdownPrivilege", "Arresto forzato da un sistema remoto" },
+            { "SeTakeOwnershipPrivilege", "Acquisizione della proprietà di file o altri oggetti" },
+            { "SeLoadDriverPrivilege", "Caricamento e scaricamento dei driver di dispositivo" },
+            { "SeSecurityPrivilege", "Gestione del registro di controllo e di protezione" },
+            { "SeSystemtimePrivilege", "Modifica dell'ora di sistema" },
+            { "SeTimeZonePrivilege", "Modifica del fuso orario" },
+            { "SeImpersonatePrivilege", "Rappresentazione di un client dopo l'autenticazione" },
+            { "SeChangeNotifyPrivilege", "Ignora controllo incrociato" },
+            { "SeCreateSymbolicLinkPrivilege", "Creazione di collegamenti simbolici" },
+            { "SeManageVolumePrivilege", "Esecuzione delle attività di manutenzione volume" },
+            { "SeTcbPrivilege", "Agire come parte del sistema operativo" },
+            { "SeSystemEnvironmentPrivilege", "Modifica dei valori di ambiente del firmware" },
+            { "SeUndockPrivilege", "Rimozione del computer dall'alloggiamento" },
+            { "SeIncreaseQuotaPrivilege", "Regolazione delle quote di memoria per un processo" },
+            { "SeAssignPrimaryTokenPrivilege", "Sostituzione di token a livello di processo" },
+            { "SeCreateGlobalPrivilege", "Creazione di oggetti globali" },
+            { "SeProfileSingleProcessPrivilege", "Profilo di singolo processo" },
+            { "SeSystemProfilePrivilege", "Profilo delle prestazioni del sistema" },
+            { "SeIncreaseBasePriorityPrivilege", "Aumento della priorità di pianificazione" },
+            { "SeCreatePagefilePrivilege", "Creazione di un file di paging" },
+            { "SeIncreaseWorkingSetPrivilege", "Aumento del working set di un processo" },
+            { "SeDelegateSessionUserImpersonatePrivilege", "Ottenimento di un token di rappresentazione per un altro utente" },
+        };
+
+        static readonly Dictionary<string, string> SecSections = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            { "System Access", "Criteri account" },
+            { "Event Audit", "Criteri di controllo" },
+            { "Privilege Rights", "Assegnazione diritti utente" },
+            { "Registry Values", "Opzioni di sicurezza" },
+        };
+
+        public static void CollectSecedit(Snapshot s)
+        {
+            string file = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "PolicyViewer_sec_" + Guid.NewGuid().ToString("N") + ".inf");
+            try
+            {
+                string output = Collector.RunProcess("secedit.exe", "/export /cfg \"" + file + "\" /areas SECURITYPOLICY USER_RIGHTS /quiet", 60000);
+                if (!File.Exists(file)) throw new Exception(string.IsNullOrWhiteSpace(output) ? "secedit non ha prodotto risultati" : output.Trim());
+                string section = null;
+                foreach (string line in File.ReadAllLines(file))
+                {
+                    string l = line.Trim();
+                    if (l.StartsWith("[")) { section = l.Trim('[', ']'); continue; }
+                    string label;
+                    if (section == null || !SecSections.TryGetValue(section, out label)) continue;
+                    int eq = l.IndexOf('=');
+                    if (eq <= 0) continue;
+                    string key = l.Substring(0, eq).Trim(), raw = l.Substring(eq + 1).Trim();
+                    AddSecedit(s, section, label, key, raw);
+                }
+            }
+            finally { try { File.Delete(file); } catch { } }
+        }
+
+        static void AddSecedit(Snapshot s, string section, string label, string key, string raw)
+        {
+            string name, value = raw.Trim('"');
+            if (section == "Registry Values")
+            {
+                // MACHINE\System\CurrentControlSet\Control\Lsa\LmCompatibilityLevel=4,5  (tipo,valore)
+                name = key.Substring(key.LastIndexOf('\\') + 1);
+                int comma = raw.IndexOf(',');
+                if (comma > 0) value = raw.Substring(comma + 1).Trim('"').Replace("\",\"", "; ");
+            }
+            else if (section == "Privilege Rights")
+            {
+                name = SecNames.ContainsKey(key) ? SecNames[key] : key;
+                value = string.Join("; ", raw.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries).Select(ResolveSid));
+            }
+            else
+            {
+                name = SecNames.ContainsKey(key) ? SecNames[key] : key;
+                if (section == "Event Audit")
+                {
+                    switch (raw)
+                    {
+                        case "0": value = "Nessun controllo (0)"; break;
+                        case "1": value = "Operazioni riuscite (1)"; break;
+                        case "2": value = "Operazioni non riuscite (2)"; break;
+                        case "3": value = "Riuscite e non riuscite (3)"; break;
+                    }
+                }
+                else if (key == "PasswordComplexity" || key == "ClearTextPassword" || key == "EnableAdminAccount" || key == "EnableGuestAccount"
+                    || key == "RequireLogonToChangePassword" || key == "ForceLogoffWhenHourExpire" || key == "LSAAnonymousNameLookup" || key == "AllowAdministratorLockout")
+                    value = raw == "1" ? "Sì (1)" : raw == "0" ? "No (0)" : raw;
+            }
+            AddEff(s, "Criteri locali", "Criteri di sicurezza locali (effettivi, da secedit)", "Criteri locali · " + label, name, value,
+                section == "Registry Values" ? "Opzione di sicurezza: " + key : null,
+                "Sezione secedit: [" + section + "]\nChiave: " + key + "\nValore grezzo: " + raw
+                    + "\n\nValore effettivo dei criteri di sicurezza locali (risultato di Intune, GPO e configurazione locale).",
+                "secedit [" + section + "] " + key);
+        }
+
+        static string ResolveSid(string entry)
+        {
+            string sid = entry.Trim().TrimStart('*');
+            if (!sid.StartsWith("S-1-", StringComparison.OrdinalIgnoreCase)) return sid;
+            try { return new SecurityIdentifier(sid).Translate(typeof(NTAccount)).Value; } catch { return sid; }
+        }
+
+        #endregion
+
+        #region Stato
+
+        public static void BuildStatus(Snapshot s)
+        {
+            var st = s.SecurityStatus;
+            var ds = s.DefenderStatus;
+
+            var mp = Wmi(@"root\Microsoft\Windows\Defender", "SELECT * FROM MSFT_MpComputerStatus").FirstOrDefault();
+            if (mp != null)
+            {
+                string mode = P(mp, "AMRunningMode") as string;
+                ds.Add(new InfoRow("Antivirus", "Microsoft Defender " + (B(P(mp, "AntivirusEnabled")) ? "attivo" : "non attivo") + (mode != null ? " · modalità " + mode : "")));
+                ds.Add(new InfoRow("Protezione in tempo reale", B(P(mp, "RealTimeProtectionEnabled")) ? "Attiva" : "Non attiva"));
+                ds.Add(new InfoRow("Protezione da manomissioni", B(P(mp, "IsTamperProtected")) ? "Attiva" : "Non attiva"));
+                object age = P(mp, "AntivirusSignatureAge");
+                ds.Add(new InfoRow("Firme antivirus", (CimDate(P(mp, "AntivirusSignatureLastUpdated")) ?? "?") + (age != null ? " (" + age + " gg)" : "") + " · " + P(mp, "AntivirusSignatureVersion")));
+                string quick = CimDate(P(mp, "QuickScanEndTime")), full = CimDate(P(mp, "FullScanEndTime"));
+                ds.Add(new InfoRow("Ultima analisi rapida / completa", (quick ?? "mai") + " / " + (full ?? "mai")));
+            }
+            else ds.Add(new InfoRow("Antivirus", "Microsoft Defender non disponibile"));
+            using (var k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows Advanced Threat Protection\Status"))
+            {
+                object v = k == null ? null : k.GetValue("OnboardingState");
+                ds.Add(new InfoRow("Defender for Endpoint", v != null && Convert.ToInt32(v) == 1 ? "Dispositivo onboardato" : "Non onboardato"));
+            }
+            var av = Wmi(@"root\SecurityCenter2", "SELECT displayName FROM AntiVirusProduct").Select(o => P(o, "displayName") as string).Where(n => n != null).Distinct().ToList();
+            if (av.Count > 0) ds.Add(new InfoRow("Antivirus registrati", string.Join(", ", av)));
+
+            var vols = Wmi(@"root\cimv2\Security\MicrosoftVolumeEncryption", "SELECT DriveLetter,ProtectionStatus,EncryptionMethod,ConversionStatus FROM Win32_EncryptableVolume")
+                .Where(v => P(v, "DriveLetter") != null).ToList();
+            if (vols.Count > 0)
+            {
+                foreach (var v in vols)
+                {
+                    int prot = Convert.ToInt32(P(v, "ProtectionStatus") ?? 0), method = Convert.ToInt32(P(v, "EncryptionMethod") ?? 0), conv = Convert.ToInt32(P(v, "ConversionStatus") ?? 0);
+                    string m = method == 3 ? "AES 128" : method == 4 ? "AES 256" : method == 6 ? "XTS-AES 128" : method == 7 ? "XTS-AES 256" : method == 0 ? "non crittografato" : "metodo " + method;
+                    string c = conv == 1 ? "crittografato" : conv == 0 ? "decrittografato" : conv == 2 ? "crittografia in corso" : conv == 3 ? "decrittografia in corso" : "stato " + conv;
+                    st.Add(new InfoRow("BitLocker " + P(v, "DriveLetter"), (prot == 1 ? "Protezione attiva" : "Protezione non attiva") + " · " + m + " · " + c));
+                }
+            }
+            else st.Add(new InfoRow("BitLocker " + Environment.GetEnvironmentVariable("SystemDrive"), BitLockerFromShell()));
+
+            var fw = Wmi(@"root\StandardCimv2", "SELECT Name,Enabled FROM MSFT_NetFirewallProfile");
+            if (fw.Count > 0)
+            {
+                var names = new Dictionary<string, string> { { "Domain", "Dominio" }, { "Private", "Privato" }, { "Public", "Pubblico" } };
+                st.Add(new InfoRow("Firewall", string.Join("  ·  ", fw.Select(p =>
+                {
+                    string n = P(p, "Name") as string ?? "?";
+                    return (names.ContainsKey(n) ? names[n] : n) + ": " + (Convert.ToInt32(P(p, "Enabled") ?? 0) == 1 ? "attivo" : "non attivo");
+                }))));
+            }
+            int fwRules = s.Items.Count(i => i.Area == "Firewall · FirewallRules");
+            if (fwRules > 0) st.Add(new InfoRow("Regole firewall da Intune", fwRules.ToString()));
+
+            using (var k = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\SecureBoot\State"))
+            {
+                object v = k == null ? null : k.GetValue("UEFISecureBootEnabled");
+                st.Add(new InfoRow("Secure Boot", v == null ? "Non supportato / BIOS legacy" : Convert.ToInt32(v) == 1 ? "Attivo" : "Non attivo"));
+            }
+
+            var tpm = Wmi(@"root\cimv2\Security\MicrosoftTpm", "SELECT * FROM Win32_Tpm").FirstOrDefault();
+            if (tpm != null)
+            {
+                string spec = (P(tpm, "SpecVersion") as string ?? "").Split(',')[0].Trim();
+                st.Add(new InfoRow("TPM", (B(P(tpm, "IsEnabled_InitialValue")) ? "Abilitato" : "Non abilitato") + (B(P(tpm, "IsActivated_InitialValue")) ? ", attivato" : "") + (spec.Length > 0 ? " · versione " + spec : "")));
+            }
+            else st.Add(new InfoRow("TPM", s.IsAdmin ? "Non rilevato" : "Richiede privilegi di amministratore"));
+
+            var dg = Wmi(@"root\Microsoft\Windows\DeviceGuard", "SELECT * FROM Win32_DeviceGuard").FirstOrDefault();
+            if (dg != null)
+            {
+                int vbs = Convert.ToInt32(P(dg, "VirtualizationBasedSecurityStatus") ?? 0);
+                var running = (P(dg, "SecurityServicesRunning") as Array ?? new int[0]).Cast<object>().Select(Convert.ToInt32).ToList();
+                var services = new List<string>();
+                if (running.Contains(1)) services.Add("Credential Guard");
+                if (running.Contains(2)) services.Add("Integrità della memoria (HVCI)");
+                if (running.Contains(3)) services.Add("System Guard Secure Launch");
+                st.Add(new InfoRow("Sicurezza basata su virtualizzazione", (vbs == 2 ? "In esecuzione" : vbs == 1 ? "Abilitata, non in esecuzione" : "Non attiva")
+                    + (services.Count > 0 ? " · " + string.Join(", ", services) : "")));
+            }
+
+            var asr = s.Items.Where(i => i.Area == "Riduzione della superficie di attacco (ASR)").ToList();
+            if (asr.Count > 0)
+                ds.Add(new InfoRow("Regole ASR", asr.Count(i => i.Value.StartsWith("Blocca")) + " in blocco · " + asr.Count(i => i.Value.StartsWith("Controllo")) + " in audit · " + asr.Count(i => i.Value.StartsWith("Avvisa")) + " in avviso"));
+
+            using (var k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"))
+            {
+                object v = k == null ? null : k.GetValue("EnableLUA");
+                st.Add(new InfoRow("Controllo account utente (UAC)", v != null && Convert.ToInt32(v) == 0 ? "Disattivato" : "Attivo"));
+            }
+
+            string laps = "Non configurato";
+            using (var k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\PolicyManager\current\device\LAPS"))
+            using (var k2 = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Policies\LAPS"))
+            using (var k3 = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Policies\Microsoft Services\AdmPwd"))
+            {
+                if (k != null && k.ValueCount > 0) laps = "Configurato da Intune (Windows LAPS)";
+                else if (k2 != null && k2.ValueCount > 0) laps = "Configurato (Windows LAPS)";
+                else if (k3 != null && k3.ValueCount > 0) laps = "Configurato (LAPS legacy)";
+            }
+            st.Add(new InfoRow("LAPS", laps));
+        }
+
+        // Stato BitLocker leggibile anche dagli utenti standard (proprieta' della shell)
+        static string BitLockerFromShell()
+        {
+            try
+            {
+                dynamic shell = Activator.CreateInstance(Type.GetTypeFromProgID("Shell.Application"));
+                object v = shell.NameSpace(17).ParseName(Environment.GetEnvironmentVariable("SystemDrive")).ExtendedProperty("System.Volume.BitLockerProtection");
+                switch (v == null ? -1 : Convert.ToInt32(v))
+                {
+                    case 1: return "Protezione attiva";
+                    case 2: return "Protezione non attiva";
+                    case 3: return "Crittografia in corso";
+                    case 4: return "Decrittografia in corso";
+                    case 5: return "Protezione sospesa";
+                    case 6: return "Bloccato";
+                    default: return "Non disponibile";
+                }
+            }
+            catch { return "Non disponibile"; }
+        }
+
+        #endregion
     }
 
     #endregion
@@ -1037,7 +1606,7 @@ namespace PolicyViewer
             sb.Append("h2{font-size:16px;margin:0 0 12px}h3{font-size:13px;margin:16px 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}");
             sb.Append("table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}");
             sb.Append("th{color:var(--muted);font-size:12px;font-weight:600}td.k{color:var(--muted);width:240px}.b{display:inline-block;padding:1px 9px;border-radius:10px;font-size:12px;font-weight:600;background:#e6eefd;color:#1d4ed8}");
-            sb.Append(".GPO{background:#f3e8ff;color:#7e22ce}.REG{background:#eef1f5;color:#475569}.WU{background:#ddf5ef;color:#0f766e}.desc{color:var(--muted);font-size:12.5px}");
+            sb.Append(".GPO{background:#f3e8ff;color:#7e22ce}.REG{background:#eef1f5;color:#475569}.WU{background:#ddf5ef;color:#0f766e}.EFF{background:#fef3c7;color:#b45309}.desc{color:var(--muted);font-size:12.5px}");
             sb.Append("#q{width:100%;max-width:420px;padding:9px 12px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text);font:inherit;margin-bottom:6px}");
             sb.Append(".warn{background:#fff8eb;border-color:#f6d58e;color:#7c4a03}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}@media(max-width:900px){.grid2{grid-template-columns:1fr}td.k{width:auto}}");
             sb.Append("</style></head><body><header><h1>Policy applicate · " + H(s.ComputerName) + "</h1><p>Utente " + H(s.UserName) + " · raccolta del " + s.CollectedAt.ToString("dd/MM/yyyy HH:mm") + (s.IsAdmin ? "" : " · eseguito senza privilegi di amministratore") + "</p></header><main>");
@@ -1058,10 +1627,15 @@ namespace PolicyViewer
             foreach (var g in s.Gpos) sb.Append("<tr><td class=\"k\">" + H(g.Scope) + "</td><td><b>" + H(g.Name) + "</b><div class=\"desc\">" + H(g.Link) + "</div></td></tr>");
             sb.Append("</table></section>");
             InfoSection(sb, "Windows Update in breve", s.UpdateStatus);
+            sb.Append("</div><div class=\"grid2\">");
+            InfoSection(sb, "Sicurezza in breve", s.SecurityStatus);
+            InfoSection(sb, "Microsoft Defender in breve", s.DefenderStatus);
             sb.Append("</div>");
 
             PolicySection(sb, "Policy utente", s.UserItems);
             PolicySection(sb, "Policy macchina", s.MachineItems);
+            PolicySection(sb, "Policy sicurezza", s.SecurityItems);
+            PolicySection(sb, "Microsoft Defender", s.DefenderItems);
             PolicySection(sb, "Policy aggiornamenti", s.UpdateItems);
 
             sb.Append("<section><h2>Cronologia Windows Update</h2><table class=\"f\"><tr><th>Data</th><th>Aggiornamento</th><th>Operazione</th><th>Esito</th></tr>");
@@ -1119,7 +1693,13 @@ namespace PolicyViewer
         {
             this.screenshotDir = screenshotDir;
             Title = "Policy Viewer";
-            Width = 1360; Height = 860; MinWidth = 1080; MinHeight = 640;
+            // Su notebook con scaling al 125-150% l'area utile e' spesso sotto i 1360x860 DIP: una finestra piu' grande
+            // dello schermo non puo' essere centrata, quindi si adatta la dimensione all'area di lavoro
+            var work = SystemParameters.WorkArea;
+            Width = Math.Min(1360, work.Width * 0.94);
+            Height = Math.Min(860, work.Height * 0.94);
+            MinWidth = Math.Min(1000, Width);
+            MinHeight = Math.Min(600, Height);
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
             FontFamily = new FontFamily("Segoe UI");
             Background = new SolidColorBrush(Color.FromRgb(0xF4, 0xF6, 0xFA));
@@ -1137,10 +1717,13 @@ namespace PolicyViewer
             NavHook("NavSummary", "summary");
             NavHook("NavUser", "user");
             NavHook("NavMachine", "machine");
+            NavHook("NavSecurity", "security");
+            NavHook("NavDefender", "defender");
             NavHook("NavUpdates", "updates");
             NavHook("NavHistory", "history");
             CardHook("CardUser", "NavUser");
             CardHook("CardMachine", "NavMachine");
+            CardHook("CardSecurity", "NavSecurity");
             CardHook("CardUpdates", "NavUpdates");
             CardHook("CardHistory", "NavHistory");
             foreach (var chip in F<Panel>("Chips").Children.OfType<RadioButton>())
@@ -1208,6 +1791,9 @@ namespace PolicyViewer
             F<TextBlock>("StatUserSub").Text = string.Format("Intune {0} · GPO {1} · Registro {2}", userMdm, userGpo, userReg);
             F<TextBlock>("StatMachine").Text = s.MachineItems.Count().ToString();
             F<TextBlock>("StatMachineSub").Text = string.Format("Intune {0} · GPO {1} · Registro {2}", machMdm, machGpo, machReg);
+            int sec = s.SecurityItems.Count(), def = s.DefenderItems.Count();
+            F<TextBlock>("StatSecurity").Text = (sec + def).ToString();
+            F<TextBlock>("StatSecuritySub").Text = string.Format("Sicurezza {0} · Defender {1}", sec, def);
             F<TextBlock>("StatUpdates").Text = s.UpdateItems.Count().ToString();
             F<TextBlock>("StatUpdatesSub").Text = string.Format("Intune {0} · WUfB DS {1} · stato effettivo {2}",
                 s.UpdateItems.Count(i => i.SourceKind == "MDM"), s.UpdateItems.Count(i => i.Source == "WUfB Deployment Service"), s.UpdateItems.Count(i => i.SourceShort == "Stato WU"));
@@ -1220,7 +1806,7 @@ namespace PolicyViewer
             F<ItemsControl>("GpoList").ItemsSource = s.Gpos;
             F<FrameworkElement>("GpoEmpty").Visibility = s.Gpos.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
             F<ItemsControl>("UpdateSummaryList").ItemsSource = s.UpdateStatus;
-            F<ItemsControl>("UpdateCards").ItemsSource = s.UpdateStatus;
+            F<ItemsControl>("SecuritySummaryList").ItemsSource = s.DefenderStatus.Concat(s.SecurityStatus).ToList();
             F<ItemsControl>("WarningList").ItemsSource = s.Warnings;
             F<FrameworkElement>("WarningCard").Visibility = s.Warnings.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
             F<FrameworkElement>("BtnElevate").Visibility = s.IsAdmin ? Visibility.Collapsed : Visibility.Visible;
@@ -1237,6 +1823,8 @@ namespace PolicyViewer
             { "summary", new[] { "Riepilogo", "Panoramica delle policy applicate a questo PC e del suo stato di gestione." } },
             { "user", new[] { "Policy utente", "Impostazioni applicate all'utente connesso da Intune, Criteri di gruppo e chiavi di registro Policies (HKCU)." } },
             { "machine", new[] { "Policy macchina", "Impostazioni applicate al dispositivo da Intune, Criteri di gruppo e chiavi di registro Policies (HKLM). Le policy di Windows Update sono nella sezione Aggiornamenti." } },
+            { "security", new[] { "Policy sicurezza", "BitLocker, firewall, LAPS, Device Guard, opzioni di sicurezza, criteri account e diritti utente: configurati da Intune/GPO e valori effettivi." } },
+            { "defender", new[] { "Microsoft Defender", "Policy Defender distribuite da Intune/GPO, configurazione effettiva dell'antivirus, regole ASR ed esclusioni." } },
             { "updates", new[] { "Policy aggiornamenti", "Anelli di aggiornamento, rinvii, scadenze e stato effettivo di Windows Update." } },
             { "history", new[] { "Cronologia aggiornamenti", "Ultime installazioni registrate da Windows Update su questo PC." } },
         };
@@ -1246,18 +1834,22 @@ namespace PolicyViewer
             page = key;
             F<TextBlock>("PageTitle").Text = PageText[key][0];
             F<TextBlock>("PageSubtitle").Text = PageText[key][1];
-            bool policies = key == "user" || key == "machine" || key == "updates";
+            bool policies = key == "user" || key == "machine" || key == "security" || key == "defender" || key == "updates";
             F<FrameworkElement>("PageSummary").Visibility = key == "summary" ? Visibility.Visible : Visibility.Collapsed;
             F<FrameworkElement>("PagePolicies").Visibility = policies ? Visibility.Visible : Visibility.Collapsed;
             F<FrameworkElement>("PageHistory").Visibility = key == "history" ? Visibility.Visible : Visibility.Collapsed;
             F<FrameworkElement>("Toolbar").Visibility = key == "summary" ? Visibility.Collapsed : Visibility.Visible;
             F<FrameworkElement>("Chips").Visibility = policies ? Visibility.Visible : Visibility.Collapsed;
-            F<FrameworkElement>("UpdateCards").Visibility = key == "updates" ? Visibility.Visible : Visibility.Collapsed;
+            var cards = F<ItemsControl>("StatusCards");
+            cards.Visibility = key == "updates" || key == "security" || key == "defender" ? Visibility.Visible : Visibility.Collapsed;
             if (data == null) return;
+            cards.ItemsSource = key == "updates" ? data.UpdateStatus : key == "security" ? data.SecurityStatus : key == "defender" ? data.DefenderStatus : null;
 
             if (policies)
             {
-                var items = (key == "user" ? data.UserItems : key == "machine" ? data.MachineItems : data.UpdateItems)
+                var source = key == "user" ? data.UserItems : key == "machine" ? data.MachineItems : key == "security" ? data.SecurityItems
+                    : key == "defender" ? data.DefenderItems : data.UpdateItems;
+                var items = source
                     .OrderBy(i => i.Area, StringComparer.CurrentCultureIgnoreCase).ThenBy(i => i.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
                 UpdateChips(items);
                 policyView = new ListCollectionView(items);
@@ -1272,8 +1864,8 @@ namespace PolicyViewer
 
         void UpdateChips(List<PolicyItem> items)
         {
-            string[] kinds = { "", "MDM", "GPO", "REG", "WU" };
-            string[] labels = { "Tutte", "Intune", "GPO", "Registro", "Windows Update" };
+            string[] kinds = { "", "MDM", "GPO", "REG", "WU", "EFF" };
+            string[] labels = { "Tutte", "Intune", "GPO", "Registro", "Windows Update", "Stato effettivo" };
             var chips = F<Panel>("Chips").Children.OfType<RadioButton>().ToList();
             for (int i = 0; i < chips.Count; i++)
             {
@@ -1376,7 +1968,7 @@ namespace PolicyViewer
         void TakeScreenshots()
         {
             Directory.CreateDirectory(screenshotDir);
-            var navs = new[] { "NavSummary", "NavUser", "NavMachine", "NavUpdates", "NavHistory" };
+            var navs = new[] { "NavSummary", "NavUser", "NavMachine", "NavSecurity", "NavDefender", "NavUpdates", "NavHistory" };
             foreach (string nav in navs)
             {
                 F<RadioButton>(nav).IsChecked = true;

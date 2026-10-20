@@ -1,11 +1,13 @@
 # Intune Policy Viewer
 
-Applicazione Windows (singolo `.exe`, nessuna installazione) che mostra **nome e dettagli delle policy applicate al PC**, divise in tre sezioni:
+Applicazione Windows (singolo `.exe`, nessuna installazione) che mostra **nome e dettagli delle policy applicate al PC**, divise per sezione:
 
 | Sezione | Contenuto |
 |---|---|
 | **Utente** | Policy Intune/MDM dell'utente connesso, GPO utente, chiavi `HKCU\Software\Policies` |
 | **Macchina** | Policy Intune/MDM del dispositivo (CSP e ADMX: Edge, OneDrive, BitLocker, Defender…), GPO computer, chiavi `HKLM\SOFTWARE\Policies` |
+| **Sicurezza** | BitLocker, firewall (incluse le regole distribuite da Intune), LAPS, Device Guard/VBS, Secure Boot, TPM, UAC, opzioni di sicurezza, criteri account, controllo e diritti utente (`secedit`, da amministratore) |
+| **Defender** | Policy Defender da Intune/GPO, configurazione effettiva dell'antivirus, regole ASR con nome, esclusioni, stato (tempo reale, manomissioni, firme, onboarding Defender for Endpoint) |
 | **Aggiornamenti** | Anelli di aggiornamento (rinvii, scadenze, orario di attività, canale), Windows Update for Business Deployment Service, stato effettivo calcolato da Windows Update, policy WSUS/GPO |
 
 In più: riepilogo del dispositivo (join Entra ID/AD, tenant, ultima sincronizzazione MDM), elenco GPO applicati/filtrati, **cronologia di Windows Update** ed **esportazione in report HTML**.
