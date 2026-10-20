@@ -1,9 +1,9 @@
 // Policy Viewer
-// Mostra nome e dettagli delle policy applicate al PC, divise in Utente, Macchina e Aggiornamenti.
-// Fonti: Intune/MDM (PolicyManager), Criteri di gruppo (gpresult), chiavi di registro Policies, stato e cronologia Windows Update.
+// Shows the name and details of the policies applied to the PC: user, machine, security, Defender and Windows Update.
+// Sources: Intune/MDM (PolicyManager), Group Policy (gpresult), Policies registry keys, Windows Update state and history.
 //
-// Opzioni da riga di comando: --export <file.html> (report senza interfaccia), --screenshot <cartella> (test: salva ogni pagina in PNG ed esce),
-// --anonymize (sostituisce nome PC, utente, email, seriale, tenant e ID: per screenshot e report da condividere)
+// Command line: --export <file.html> (report without UI), --screenshot <folder> (test: saves one PNG per page and exits),
+// --anonymize (replaces PC name, user, email, serial number, tenant and IDs: for screenshots and reports to share)
 
 using System;
 using System.Collections.Generic;
@@ -33,8 +33,8 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("Policy Viewer")]
 [assembly: AssemblyProduct("Policy Viewer")]
-[assembly: AssemblyVersion("1.0.1.0")]
-[assembly: AssemblyFileVersion("1.0.1.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
 [assembly: System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8", FrameworkDisplayName = ".NET Framework 4.8")]
 
 namespace PolicyViewer
@@ -73,21 +73,27 @@ namespace PolicyViewer
             app.ShutdownMode = ShutdownMode.OnMainWindowClose;
             app.DispatcherUnhandledException += delegate (object s, DispatcherUnhandledExceptionEventArgs e)
             {
-                MessageBox.Show(e.Exception.ToString(), "Policy Viewer - errore", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show(e.Exception.ToString(), "Policy Viewer - error", MessageBoxButton.OK, MessageBoxImage.Error);
                 e.Handled = true;
             };
             return app.Run(new MainWindow(screenshots, anonymize));
         }
     }
 
-    #region Modello dati
+    static class Fmt
+    {
+        public const string DateTime = "yyyy-MM-dd HH:mm";
+        public const string Date = "yyyy-MM-dd";
+    }
+
+    #region Data model
 
     public class PolicyItem
     {
-        public string Scope { get; set; }        // Utente / Macchina
-        public string Source { get; set; }       // descrizione completa dell'origine
-        public string SourceShort { get; set; }  // testo del badge
-        public string SourceKind { get; set; }   // MDM, GPO, REG, WU
+        public string Scope { get; set; }        // User / Machine
+        public string Source { get; set; }       // full description of the source
+        public string SourceShort { get; set; }  // badge text
+        public string SourceKind { get; set; }   // MDM, GPO, REG, WU, EFF
         public string Area { get; set; }
         public string Name { get; set; }
         public string Value { get; set; }
@@ -130,7 +136,7 @@ namespace PolicyViewer
     public class HistoryItem
     {
         public DateTime Date { get; set; }
-        public string DateText { get { return Date == DateTime.MinValue ? "" : Date.ToString("dd/MM/yyyy HH:mm"); } }
+        public string DateText { get { return Date == DateTime.MinValue ? "" : Date.ToString(Fmt.DateTime); } }
         public string Title { get; set; }
         public string Operation { get; set; }
         public string Result { get; set; }
@@ -156,8 +162,8 @@ namespace PolicyViewer
         public List<string> Warnings = new List<string>();
         public Dictionary<string, string> Providers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-        public IEnumerable<PolicyItem> UserItems { get { return Items.Where(i => i.Scope == "Utente" && !i.IsUpdate && !i.IsSecurity); } }
-        public IEnumerable<PolicyItem> MachineItems { get { return Items.Where(i => i.Scope == "Macchina" && !i.IsUpdate && !i.IsSecurity); } }
+        public IEnumerable<PolicyItem> UserItems { get { return Items.Where(i => i.Scope == "User" && !i.IsUpdate && !i.IsSecurity); } }
+        public IEnumerable<PolicyItem> MachineItems { get { return Items.Where(i => i.Scope == "Machine" && !i.IsUpdate && !i.IsSecurity); } }
         public IEnumerable<PolicyItem> SecurityItems { get { return Items.Where(i => i.IsSecurity && !i.IsDefender && !i.IsUpdate); } }
         public IEnumerable<PolicyItem> DefenderItems { get { return Items.Where(i => i.IsDefender && !i.IsUpdate); } }
         public IEnumerable<PolicyItem> UpdateItems { get { return Items.Where(i => i.IsUpdate); } }
@@ -165,7 +171,7 @@ namespace PolicyViewer
 
     #endregion
 
-    #region Raccolta
+    #region Collection
 
     static class Collector
     {
@@ -177,9 +183,9 @@ namespace PolicyViewer
         public static Snapshot Collect(Action<string> progress)
         {
             var s = new Snapshot { CollectedAt = DateTime.Now, IsAdmin = IsAdmin() };
-            Step(s, progress, "Identificazione dell'utente connesso", delegate { ResolveUser(s); });
+            Step(s, progress, "Identifying the signed-in user", delegate { ResolveUser(s); });
 
-            // gpresult e' la parte piu' lenta: parte subito in parallelo al resto
+            // gpresult is the slowest part: start it right away, in parallel with the rest
             XmlDocument gpComputer = null, gpUser = null;
             string gpComputerErr = null, gpUserErr = null;
             var gpTasks = new List<Task>();
@@ -187,45 +193,45 @@ namespace PolicyViewer
             {
                 try { gpComputer = RunGpresult("computer", null, out gpComputerErr); } catch (Exception ex) { gpComputerErr = ex.Message; }
             }));
-            else s.Warnings.Add("Esecuzione senza privilegi di amministratore: le impostazioni GPO del computer non sono disponibili.");
+            else s.Warnings.Add("Running without administrator rights: computer Group Policy settings are not available.");
             string gpUserArg = s.UserIsCurrent ? null : s.UserName;
             gpTasks.Add(Task.Factory.StartNew(delegate
             {
                 try { gpUser = RunGpresult("user", gpUserArg, out gpUserErr); } catch (Exception ex) { gpUserErr = ex.Message; }
             }));
 
-            Step(s, progress, "Lettura informazioni del dispositivo", delegate { CollectDevice(s); });
-            Step(s, progress, "Lettura delle registrazioni MDM", delegate { CollectEnrollments(s); });
-            Step(s, progress, "Lettura policy Intune del dispositivo", delegate { CollectMdm(s, "device", "Device", "Macchina"); });
-            Step(s, progress, "Lettura policy Intune dell'utente", delegate { CollectMdm(s, s.UserSid, s.UserSid, "Utente"); });
-            Step(s, progress, "Lettura chiavi di registro Policies (macchina)", delegate
+            Step(s, progress, "Reading device information", delegate { CollectDevice(s); });
+            Step(s, progress, "Reading MDM enrollments", delegate { CollectEnrollments(s); });
+            Step(s, progress, "Reading Intune device policies", delegate { CollectMdm(s, "device", "Device", "Machine"); });
+            Step(s, progress, "Reading Intune user policies", delegate { CollectMdm(s, s.UserSid, s.UserSid, "User"); });
+            Step(s, progress, "Reading Policies registry keys (machine)", delegate
             {
-                CollectRegistry(s, Registry.LocalMachine, "HKLM", @"SOFTWARE\Policies", "", "Macchina");
-                CollectRegistry(s, Registry.LocalMachine, "HKLM", @"SOFTWARE\WOW6432Node\Policies", "WOW6432Node\\", "Macchina");
-                CollectRegistry(s, Registry.LocalMachine, "HKLM", @"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies", "CurrentVersion\\Policies\\", "Macchina");
+                CollectRegistry(s, Registry.LocalMachine, "HKLM", @"SOFTWARE\Policies", "", "Machine");
+                CollectRegistry(s, Registry.LocalMachine, "HKLM", @"SOFTWARE\WOW6432Node\Policies", "WOW6432Node\\", "Machine");
+                CollectRegistry(s, Registry.LocalMachine, "HKLM", @"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies", "CurrentVersion\\Policies\\", "Machine");
             });
-            Step(s, progress, "Lettura chiavi di registro Policies (utente)", delegate
+            Step(s, progress, "Reading Policies registry keys (user)", delegate
             {
-                CollectRegistry(s, Registry.Users, "HKU\\" + s.UserSid, s.UserSid + @"\Software\Policies", "", "Utente");
-                CollectRegistry(s, Registry.Users, "HKU\\" + s.UserSid, s.UserSid + @"\Software\Microsoft\Windows\CurrentVersion\Policies", "CurrentVersion\\Policies\\", "Utente");
+                CollectRegistry(s, Registry.Users, "HKU\\" + s.UserSid, s.UserSid + @"\Software\Policies", "", "User");
+                CollectRegistry(s, Registry.Users, "HKU\\" + s.UserSid, s.UserSid + @"\Software\Microsoft\Windows\CurrentVersion\Policies", "CurrentVersion\\Policies\\", "User");
             });
-            Step(s, progress, "Lettura regole firewall Intune", delegate { Security.CollectFirewallMdm(s); });
-            Step(s, progress, "Lettura configurazione effettiva di Microsoft Defender", delegate { Security.CollectDefender(s); });
-            if (s.IsAdmin) Step(s, progress, "Lettura criteri di sicurezza locali (secedit)", delegate { Security.CollectSecedit(s); });
-            else s.Warnings.Add("Esecuzione senza privilegi di amministratore: criteri di sicurezza locali (account, controllo, diritti utente) e stato BitLocker/TPM non disponibili.");
-            Step(s, progress, "Stato della sicurezza", delegate { Security.BuildStatus(s); });
-            Step(s, progress, "Lettura stato di Windows Update", delegate { CollectUpdateState(s); });
-            Step(s, progress, "Lettura cronologia di Windows Update", delegate { CollectUpdateHistory(s); });
-            Step(s, progress, "Riepilogo Windows Update", delegate { BuildUpdateStatus(s); });
+            Step(s, progress, "Reading Intune firewall rules", delegate { Security.CollectFirewallMdm(s); });
+            Step(s, progress, "Reading the effective Microsoft Defender configuration", delegate { Security.CollectDefender(s); });
+            if (s.IsAdmin) Step(s, progress, "Reading local security policy (secedit)", delegate { Security.CollectSecedit(s); });
+            else s.Warnings.Add("Running without administrator rights: local security policy (account, audit, user rights) and BitLocker/TPM status are not available.");
+            Step(s, progress, "Security status", delegate { Security.BuildStatus(s); });
+            Step(s, progress, "Reading Windows Update state", delegate { CollectUpdateState(s); });
+            Step(s, progress, "Reading Windows Update history", delegate { CollectUpdateHistory(s); });
+            Step(s, progress, "Windows Update summary", delegate { BuildUpdateStatus(s); });
 
-            if (progress != null) progress("Attesa risultati Criteri di gruppo (gpresult)");
+            if (progress != null) progress("Waiting for Group Policy results (gpresult)");
             Task.WaitAll(gpTasks.ToArray());
-            Step(s, progress, "Analisi Criteri di gruppo", delegate
+            Step(s, progress, "Analyzing Group Policy", delegate
             {
-                if (gpComputer != null) ParseGp(s, gpComputer, "ComputerResults", "Macchina");
-                else if (s.IsAdmin) s.Warnings.Add("GPO computer non disponibili: " + gpComputerErr);
-                if (gpUser != null) ParseGp(s, gpUser, "UserResults", "Utente");
-                else s.Warnings.Add("GPO utente non disponibili: " + gpUserErr);
+                if (gpComputer != null) ParseGp(s, gpComputer, "ComputerResults", "Machine");
+                else if (s.IsAdmin) s.Warnings.Add("Computer Group Policy not available: " + gpComputerErr);
+                if (gpUser != null) ParseGp(s, gpUser, "UserResults", "User");
+                else s.Warnings.Add("User Group Policy not available: " + gpUserErr);
             });
             foreach (var i in s.Items) i.IsDefender = Security.IsDefender(i);
             return s;
@@ -248,7 +254,7 @@ namespace PolicyViewer
             var cur = WindowsIdentity.GetCurrent();
             s.UserSid = cur.User.Value;
             s.UserName = cur.Name;
-            // Se il tool e' stato avviato con credenziali diverse (es. admin), le policy utente sono quelle di chi e' connesso alla sessione
+            // If the tool was started with different credentials (e.g. admin), the user policies are those of the user signed in to the session
             int session = Process.GetCurrentProcess().SessionId;
             foreach (var p in Process.GetProcessesByName("explorer"))
             {
@@ -270,10 +276,10 @@ namespace PolicyViewer
             }
             s.UserIsCurrent = string.Equals(s.UserSid, cur.User.Value, StringComparison.OrdinalIgnoreCase);
             if (!s.UserIsCurrent)
-                s.Warnings.Add("Tool avviato come " + cur.Name + ": le policy utente mostrate sono quelle dell'utente connesso " + s.UserName + ".");
+                s.Warnings.Add("Tool started as " + cur.Name + ": the user policies shown are those of the signed-in user " + s.UserName + ".");
         }
 
-        #region Dispositivo e MDM
+        #region Device and MDM
 
         static void CollectDevice(Snapshot s)
         {
@@ -281,7 +287,7 @@ namespace PolicyViewer
             foreach (ManagementObject o in new ManagementObjectSearcher("SELECT Caption,LastBootUpTime FROM Win32_OperatingSystem").Get())
             {
                 caption = (o["Caption"] as string ?? "").Replace("Microsoft ", "");
-                try { lastBoot = ManagementDateTimeConverter.ToDateTime((string)o["LastBootUpTime"]).ToString("dd/MM/yyyy HH:mm"); } catch { }
+                try { lastBoot = ManagementDateTimeConverter.ToDateTime((string)o["LastBootUpTime"]).ToString(Fmt.DateTime); } catch { }
             }
             foreach (ManagementObject o in new ManagementObjectSearcher("SELECT Manufacturer,Model FROM Win32_ComputerSystem").Get())
             {
@@ -292,19 +298,19 @@ namespace PolicyViewer
                 serial = o["SerialNumber"] as string;
 
             var join = ParseDsregcmd();
-            Func<string, string> yn = delegate (string k) { string v; return join.TryGetValue(k, out v) ? (v == "YES" ? "Sì" : "No") : "?"; };
+            Func<string, string> yn = delegate (string k) { string v; return join.TryGetValue(k, out v) ? (v == "YES" ? "Yes" : "No") : "?"; };
             string tenant;
             join.TryGetValue("TenantName", out tenant);
 
-            s.Device.Add(new InfoRow("Nome computer", s.ComputerName));
-            s.Device.Add(new InfoRow("Utente connesso", s.UserName));
-            s.Device.Add(new InfoRow("Sistema operativo", caption));
-            s.Device.Add(new InfoRow("Versione", WindowsVersion()));
-            s.Device.Add(new InfoRow("Produttore / modello", (manufacturer + " " + model).Trim()));
-            s.Device.Add(new InfoRow("Numero di serie", serial));
-            s.Device.Add(new InfoRow("Join", "Entra ID: " + yn("AzureAdJoined") + "  ·  Dominio AD: " + yn("DomainJoined") + "  ·  Registrato: " + yn("WorkplaceJoined")));
+            s.Device.Add(new InfoRow("Computer name", s.ComputerName));
+            s.Device.Add(new InfoRow("Signed-in user", s.UserName));
+            s.Device.Add(new InfoRow("Operating system", caption));
+            s.Device.Add(new InfoRow("Version", WindowsVersion()));
+            s.Device.Add(new InfoRow("Manufacturer / model", (manufacturer + " " + model).Trim()));
+            s.Device.Add(new InfoRow("Serial number", serial));
+            s.Device.Add(new InfoRow("Join", "Entra ID: " + yn("AzureAdJoined") + "  ·  AD domain: " + yn("DomainJoined") + "  ·  Registered: " + yn("WorkplaceJoined")));
             s.Device.Add(new InfoRow("Tenant", tenant));
-            s.Device.Add(new InfoRow("Ultimo avvio", lastBoot));
+            s.Device.Add(new InfoRow("Last boot", lastBoot));
         }
 
         public static string WindowsVersion()
@@ -329,7 +335,7 @@ namespace PolicyViewer
         {
             using (var root = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Enrollments"))
             {
-                if (root == null) { s.Management.Add(new InfoRow("MDM", "Dispositivo non registrato in alcun MDM")); return; }
+                if (root == null) { s.Management.Add(new InfoRow("MDM", "Device not enrolled in any MDM")); return; }
                 foreach (string id in root.GetSubKeyNames())
                 {
                     RegistryKey key = null;
@@ -349,21 +355,21 @@ namespace PolicyViewer
                         string sync = LastSync(id);
                         var parts = new List<string>();
                         if (!string.IsNullOrEmpty(upn)) parts.Add(upn);
-                        if (sync != null) parts.Add("ultima sincronizzazione " + sync);
+                        if (sync != null) parts.Add("last sync " + sync);
                         parts.Add("ID " + id);
                         s.Management.Add(new InfoRow(s.Providers[id], string.Join("\n", parts)));
                     }
                 }
             }
-            if (s.Management.Count == 0) s.Management.Add(new InfoRow("MDM", "Nessuna registrazione Intune trovata"));
+            if (s.Management.Count == 0) s.Management.Add(new InfoRow("MDM", "No Intune enrollment found"));
 
-            // Intune Management Extension (app Win32, script, remediation)
-            // Per gli utenti standard la chiave IME non e' leggibile: si verifica la presenza del servizio
+            // Intune Management Extension (Win32 apps, scripts, remediations)
+            // Standard users cannot read the IME key: check for the service instead
             bool ime = File.Exists(@"C:\Program Files (x86)\Microsoft Intune Management Extension\Microsoft.Management.Services.IntuneWindowsAgent.exe")
                 || Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\IntuneManagementExtension") != null;
             string imeLog = @"C:\ProgramData\Microsoft\IntuneManagementExtension\Logs\IntuneManagementExtension.log";
-            string val = ime ? "Installata" : "Non installata";
-            try { if (File.Exists(imeLog)) val += "  ·  log aggiornato " + File.GetLastWriteTime(imeLog).ToString("dd/MM/yyyy HH:mm"); } catch { }
+            string val = ime ? "Installed" : "Not installed";
+            try { if (File.Exists(imeLog)) val += "  ·  log updated " + File.GetLastWriteTime(imeLog).ToString(Fmt.DateTime); } catch { }
             s.Management.Add(new InfoRow("Intune Management Extension", val));
         }
 
@@ -374,7 +380,7 @@ namespace PolicyViewer
                 string v = k == null ? null : k.GetValue("ServerLastSuccessTime") as string;
                 DateTime d;
                 if (v != null && DateTime.TryParseExact(v, "yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out d))
-                    return d.ToLocalTime().ToString("dd/MM/yyyy HH:mm");
+                    return d.ToLocalTime().ToString(Fmt.DateTime);
                 return null;
             }
         }
@@ -416,10 +422,10 @@ namespace PolicyViewer
         {
             string winner = ak.GetValue(name + "_WinningProvider") as string;
             object raw = ak.GetValue(name);
-            // Solo "_LastWrite" senza valore ne' provider: residuo di una policy non piu' assegnata
+            // Only "_LastWrite" with neither value nor provider: leftover of a policy that is no longer assigned
             if (raw == null && winner == null && ak.GetValue(name + "_ProviderSet") == null) return;
             string path = @"HKLM\" + PmRoot + @"\current\" + scopeKey + "\\" + area;
-            // I criteri ADMX (e alcuni CSP) salvano il valore solo sotto il provider che l'ha impostato
+            // ADMX policies (and some CSPs) store the value only under the provider that set it
             if (raw == null && winner != null)
             {
                 string pp = PmRoot + @"\providers\" + winner + @"\default\" + providerScope + "\\" + area;
@@ -433,19 +439,19 @@ namespace PolicyViewer
             bool isAdmx = area.Contains("~Policy~") || area.StartsWith("ADMX_", StringComparison.OrdinalIgnoreCase) || ak.GetValue(name + "_ADMXInstanceData") != null;
             string rawText = FormatValue(raw);
             var details = new StringBuilder();
-            details.AppendLine("CSP: ./" + (scope == "Utente" ? "User" : "Device") + "/Vendor/MSFT/Policy/Config/" + area + "/" + name);
-            details.AppendLine("Valore grezzo: " + (rawText ?? "(non leggibile)"));
-            details.AppendLine("Provider vincente: " + (winner ?? "?") + " (" + provider + ")");
-            if (isAdmx) details.AppendLine("Tipo: criterio ADMX gestito via MDM");
+            details.AppendLine("CSP: ./" + (scope == "User" ? "User" : "Device") + "/Vendor/MSFT/Policy/Config/" + area + "/" + name);
+            details.AppendLine("Raw value: " + (rawText ?? "(not readable)"));
+            details.AppendLine("Winning provider: " + (winner ?? "?") + " (" + provider + ")");
+            if (isAdmx) details.AppendLine("Type: ADMX policy managed via MDM");
             using (var meta = Registry.LocalMachine.OpenSubKey(PmRoot + @"\default\" + area + "\\" + name))
             {
                 if (meta != null)
                 {
                     object low = meta.GetValue("lowrange"), high = meta.GetValue("highrange"), def = meta.GetValue("value");
-                    if (low != null && high != null) details.AppendLine("Intervallo consentito: " + low + " – " + high);
-                    if (def != null) details.AppendLine("Valore predefinito: " + FormatValue(def));
+                    if (low != null && high != null) details.AppendLine("Allowed range: " + low + " – " + high);
+                    if (def != null) details.AppendLine("Default value: " + FormatValue(def));
                     string gpKey = meta.GetValue("GPBlockingRegKeyPath") as string;
-                    if (gpKey != null) details.AppendLine("Equivalente GPO: HKLM\\" + gpKey + "\\" + meta.GetValue("GPBlockingRegValueName"));
+                    if (gpKey != null) details.AppendLine("Equivalent GPO: HKLM\\" + gpKey + "\\" + meta.GetValue("GPBlockingRegValueName"));
                 }
             }
 
@@ -460,7 +466,7 @@ namespace PolicyViewer
                 SourceKind = provider == WufbLabel ? "WU" : "MDM",
                 Area = (isUpdate ? "Intune · " : "") + PrettyArea(area),
                 Name = name,
-                Value = (isAdmx ? DecodeAdmx(raw as string) : Descriptions.Decode(name, raw)) ?? rawText ?? "(non leggibile)",
+                Value = (isAdmx ? DecodeAdmx(raw as string) : Descriptions.Decode(name, raw)) ?? rawText ?? "(not readable)",
                 Description = description,
                 Details = details.ToString().TrimEnd(),
                 Path = path + "\\" + name,
@@ -490,13 +496,13 @@ namespace PolicyViewer
             return cats.Count == 0 ? appName : appName + " › " + string.Join(" › ", cats);
         }
 
-        // "<enabled/><data id="SSLVersionMin" value="tls1.2"/>" -> "Abilitato · SSLVersionMin = tls1.2"
+        // "<enabled/><data id="SSLVersionMin" value="tls1.2"/>" -> "Enabled · SSLVersionMin = tls1.2"
         static string DecodeAdmx(string raw)
         {
             if (string.IsNullOrEmpty(raw) || !raw.TrimStart().StartsWith("<")) return null;
             var parts = new List<string>();
-            if (raw.Contains("<enabled")) parts.Add("Abilitato");
-            else if (raw.Contains("<disabled")) parts.Add("Disabilitato");
+            if (raw.Contains("<enabled")) parts.Add("Enabled");
+            else if (raw.Contains("<disabled")) parts.Add("Disabled");
             foreach (Match m in Regex.Matches(raw, "<data\\s+id=\"([^\"]*)\"\\s+value=\"([^\"]*)\"", RegexOptions.IgnoreCase))
             {
                 string v = WebUtility.HtmlDecode(m.Groups[2].Value).Replace("\uF000", "; ").Trim(' ', ';');
@@ -507,7 +513,7 @@ namespace PolicyViewer
 
         #endregion
 
-        #region Registro
+        #region Registry
 
         static void CollectRegistry(Snapshot s, RegistryKey hive, string hiveName, string subPath, string areaPrefix, string scope)
         {
@@ -527,20 +533,20 @@ namespace PolicyViewer
                 string kind = "";
                 try { kind = key.GetValueKind(vn).ToString(); } catch { }
                 bool isUpdate = fullPath.IndexOf(@"\WindowsUpdate", StringComparison.OrdinalIgnoreCase) >= 0 || fullPath.IndexOf(@"\DeliveryOptimization", StringComparison.OrdinalIgnoreCase) >= 0;
-                string name = vn.Length == 0 ? "(Predefinito)" : vn;
-                string area = areaPrefix + (rel.Length == 0 ? "(radice)" : rel);
+                string name = vn.Length == 0 ? "(Default)" : vn;
+                string area = areaPrefix + (rel.Length == 0 ? "(root)" : rel);
                 s.Items.Add(new PolicyItem
                 {
                     Scope = scope,
-                    Source = "Registro (valore effettivo; scritto da GPO, Intune o software)",
-                    SourceShort = "Registro",
+                    Source = "Registry (effective value; written by GPO, Intune or software)",
+                    SourceShort = "Registry",
                     SourceKind = "REG",
-                    Area = (isUpdate ? "Registro · " : "") + area,
+                    Area = (isUpdate ? "Registry · " : "") + area,
                     Name = name,
                     Value = (isUpdate ? Descriptions.Decode(vn, raw) : null) ?? FormatValue(raw),
                     Description = isUpdate ? Descriptions.Get(vn) : null,
-                    Details = "Chiave: " + fullPath + "\nValore: " + name + "\nTipo: REG_" + RegKindName(kind) + "\nDati: " + FormatValue(raw)
-                        + "\n\nIl registro mostra il valore effettivo ma non chi l'ha scritto: confrontare con le schede Intune e GPO.",
+                    Details = "Key: " + fullPath + "\nValue: " + name + "\nType: REG_" + RegKindName(kind) + "\nData: " + FormatValue(raw)
+                        + "\n\nThe registry shows the effective value but not who wrote it: compare with the Intune and GPO entries.",
                     Path = fullPath + "\\" + name,
                     IsUpdate = isUpdate,
                     IsSecurity = Security.IsSecurityPath(fullPath),
@@ -582,14 +588,14 @@ namespace PolicyViewer
             {
                 var b = (byte[])raw;
                 string hex = BitConverter.ToString(b.Take(48).ToArray()).Replace("-", " ");
-                return b.Length > 48 ? hex + " … (" + b.Length + " byte)" : hex;
+                return b.Length > 48 ? hex + " … (" + b.Length + " bytes)" : hex;
             }
             return raw.ToString();
         }
 
         #endregion
 
-        #region Criteri di gruppo
+        #region Group Policy
 
         static XmlDocument RunGpresult(string scope, string user, out string error)
         {
@@ -601,7 +607,7 @@ namespace PolicyViewer
             {
                 if (!File.Exists(file))
                 {
-                    error = string.IsNullOrWhiteSpace(output) ? "gpresult non ha prodotto risultati" : Regex.Replace(output.Trim(), @"\s+", " ");
+                    error = string.IsNullOrWhiteSpace(output) ? "gpresult produced no results" : Regex.Replace(output.Trim(), @"\s+", " ");
                     return null;
                 }
                 var doc = new XmlDocument();
@@ -646,7 +652,7 @@ namespace PolicyViewer
                 bool applied = Child(g, "IsValid") != "false" && Child(g, "FilterAllowed") != "false" && Child(g, "AccessDenied") != "true" && Child(g, "Enabled") != "false";
                 var link = ChildNode(g, "Link");
                 string som = link != null ? Child(link, "SOMPath") : null;
-                string reason = applied ? "Applicato" : Child(g, "AccessDenied") == "true" ? "Accesso negato" : Child(g, "FilterAllowed") == "false" ? "Escluso da filtro WMI/sicurezza" : "Non applicato";
+                string reason = applied ? "Applied" : Child(g, "AccessDenied") == "true" ? "Access denied" : Child(g, "FilterAllowed") == "false" ? "Excluded by WMI/security filter" : "Not applied";
                 if (s.Gpos.Any(x => x.Name == name && x.Scope == scope)) continue;
                 s.Gpos.Add(new GpoInfo { Scope = scope, Name = name, Applied = applied, Link = reason + (som != null ? "  ·  " + som : "") });
             }
@@ -697,12 +703,12 @@ namespace PolicyViewer
             string value;
             if (state != null)
             {
-                value = state == "Enabled" ? "Abilitato" : state == "Disabled" ? "Disabilitato" : state == "NotConfigured" ? "Non configurato" : state;
+                value = state == "NotConfigured" ? "Not configured" : state;
                 var opts = extra.Where(l => l.EndsWith("/Name = ") == false).Take(3).Select(l => Regex.Replace(l, "^.*?([^/]+/[^/]+ = )", "$1")).ToList();
                 if (opts.Count > 0) value += "  ·  " + string.Join("  ·  ", opts);
             }
             else value = string.Join("  ·  ", extra.Take(3));
-            if (string.IsNullOrEmpty(value)) value = "(configurato)";
+            if (string.IsNullOrEmpty(value)) value = "(configured)";
 
             string category = Child(c, "Category");
             string all = name + " " + category + " " + string.Join(" ", leaves);
@@ -720,7 +726,7 @@ namespace PolicyViewer
                 Name = name,
                 Value = value,
                 Description = explain ?? Descriptions.Get(name),
-                Details = "Estensione: " + extName + "\nTipo elemento: " + c.LocalName + "\nOggetto Criteri di gruppo: " + gpoName + "\n\n" + string.Join("\n", leaves),
+                Details = "Extension: " + extName + "\nElement type: " + c.LocalName + "\nGroup Policy Object: " + gpoName + "\n\n" + string.Join("\n", leaves),
                 Path = Child(c, "KeyPath") ?? Child(c, "KeyName") ?? (category != null ? category + "/" + name : extName),
                 IsUpdate = isUpdate,
                 IsSecurity = Security.IsSecurityGp(extName, category, Child(c, "KeyPath") ?? Child(c, "KeyName")),
@@ -730,14 +736,6 @@ namespace PolicyViewer
         #endregion
 
         #region Windows Update
-
-        static readonly Dictionary<string, string> PolicyStateNames = new Dictionary<string, string>
-        {
-            { "BranchReadinessLevel", "Canale effettivo" },
-            { "QualityUpdatesDeferralInDays", "Rinvio qualitativi effettivo" },
-            { "FeatureUpdatesDeferralInDays", "Rinvio funzionalità effettivo" },
-            { "IsWUfBConfigured", "Windows Update for Business configurato" },
-        };
 
         static void CollectUpdateState(Snapshot s)
         {
@@ -750,15 +748,15 @@ namespace PolicyViewer
                     object raw = k.GetValue(vn);
                     s.Items.Add(new PolicyItem
                     {
-                        Scope = "Macchina",
-                        Source = "Windows Update (stato effettivo calcolato dal client)",
-                        SourceShort = "Stato WU",
+                        Scope = "Machine",
+                        Source = "Windows Update (effective state computed by the client)",
+                        SourceShort = "WU state",
                         SourceKind = "WU",
-                        Area = "Stato effettivo Windows Update",
+                        Area = "Windows Update effective state",
                         Name = vn,
                         Value = Descriptions.Decode(vn, raw) ?? FormatValue(raw),
-                        Description = Descriptions.Get(vn) ?? "Valore effettivo calcolato da Windows Update a partire da tutte le policy applicate (GPO e MDM).",
-                        Details = "Chiave: HKLM\\" + psPath + "\nValore grezzo: " + FormatValue(raw),
+                        Description = Descriptions.Get(vn) ?? "Effective value computed by Windows Update from all applied policies (GPO and MDM).",
+                        Details = "Key: HKLM\\" + psPath + "\nRaw value: " + FormatValue(raw),
                         Path = @"HKLM\" + psPath + "\\" + vn,
                         IsUpdate = true,
                     });
@@ -786,18 +784,18 @@ namespace PolicyViewer
                 string res, kind;
                 switch (result)
                 {
-                    case 2: res = "Riuscito"; kind = "OK"; break;
-                    case 3: res = "Riuscito con errori"; kind = "WARN"; break;
-                    case 4: res = "Non riuscito"; kind = "KO"; break;
-                    case 5: res = "Annullato"; kind = "WARN"; break;
-                    case 1: res = "In corso"; kind = "INFO"; break;
-                    default: res = "Non avviato"; kind = "INFO"; break;
+                    case 2: res = "Succeeded"; kind = "OK"; break;
+                    case 3: res = "Succeeded with errors"; kind = "WARN"; break;
+                    case 4: res = "Failed"; kind = "KO"; break;
+                    case 5: res = "Aborted"; kind = "WARN"; break;
+                    case 1: res = "In progress"; kind = "INFO"; break;
+                    default: res = "Not started"; kind = "INFO"; break;
                 }
                 s.History.Add(new HistoryItem
                 {
                     Date = date,
                     Title = title,
-                    Operation = op == 2 ? "Disinstallazione" : op == 1 ? "Installazione" : "Altro",
+                    Operation = op == 2 ? "Uninstall" : op == 1 ? "Install" : "Other",
                     Result = res,
                     ResultKind = kind,
                 });
@@ -808,26 +806,26 @@ namespace PolicyViewer
         static void BuildUpdateStatus(Snapshot s)
         {
             var st = s.UpdateStatus;
-            st.Add(new InfoRow("Versione Windows", WindowsVersion()));
+            st.Add(new InfoRow("Windows version", WindowsVersion()));
 
             string channel = PolicyStateValue("BranchReadinessLevel");
-            if (channel != null) st.Add(new InfoRow("Canale", channel == "CB" ? "General Availability Channel" : channel));
+            if (channel != null) st.Add(new InfoRow("Channel", channel == "CB" ? "General Availability Channel" : channel));
 
             string q = PolicyStateValue("QualityUpdatesDeferralInDays"), f = PolicyStateValue("FeatureUpdatesDeferralInDays");
-            if (q != null || f != null) st.Add(new InfoRow("Rinvio qualitativi / funzionalità", (q ?? "?") + " gg / " + (f ?? "?") + " gg"));
+            if (q != null || f != null) st.Add(new InfoRow("Quality / feature deferral", (q ?? "?") + " d / " + (f ?? "?") + " d"));
 
             var mdmUpdate = s.Items.Where(i => i.SourceKind == "MDM" && i.IsUpdate).GroupBy(i => i.Name, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(g => g.Key, g => g.First().Value, StringComparer.OrdinalIgnoreCase);
             string dq, df, grace;
             if (mdmUpdate.TryGetValue("ConfigureDeadlineForQualityUpdates", out dq) | mdmUpdate.TryGetValue("ConfigureDeadlineForFeatureUpdates", out df))
-                st.Add(new InfoRow("Scadenza qualitativi / funzionalità", (dq ?? "—") + " / " + (df ?? "—") + (mdmUpdate.TryGetValue("ConfigureDeadlineGracePeriod", out grace) ? "  (tolleranza " + grace + ")" : "")));
+                st.Add(new InfoRow("Quality / feature deadline", (dq ?? "—") + " / " + (df ?? "—") + (mdmUpdate.TryGetValue("ConfigureDeadlineGracePeriod", out grace) ? "  (grace period " + grace + ")" : "")));
             string ahs, ahe;
             if (mdmUpdate.TryGetValue("ActiveHoursStart", out ahs) && mdmUpdate.TryGetValue("ActiveHoursEnd", out ahe))
-                st.Add(new InfoRow("Orario di attività", ahs + " – " + ahe));
+                st.Add(new InfoRow("Active hours", ahs + " – " + ahe));
             string pq, pf;
             mdmUpdate.TryGetValue("PauseQualityUpdates", out pq);
             mdmUpdate.TryGetValue("PauseFeatureUpdates", out pf);
-            if (pq != null || pf != null) st.Add(new InfoRow("Sospensione qualitativi / funzionalità", (pq ?? "—") + " / " + (pf ?? "—")));
+            if (pq != null || pf != null) st.Add(new InfoRow("Quality / feature pause", (pq ?? "—") + " / " + (pf ?? "—")));
 
             string wsus = null;
             using (var k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate"))
@@ -843,28 +841,29 @@ namespace PolicyViewer
                     if ((bool)svc.IsDefaultAUService) defaultService = (string)svc.Name;
             }
             catch { }
-            st.Add(new InfoRow("Sorgente aggiornamenti", wsus != null ? "WSUS: " + wsus : defaultService ?? "Windows Update"));
+            st.Add(new InfoRow("Update source", wsus != null ? "WSUS: " + wsus : defaultService ?? "Windows Update"));
 
             try
             {
                 dynamic au = Activator.CreateInstance(Type.GetTypeFromProgID("Microsoft.Update.AutoUpdate"));
                 dynamic r = au.Results;
-                try { st.Add(new InfoRow("Ultima ricerca riuscita", ((DateTime)r.LastSearchSuccessDate).ToLocalTime().ToString("dd/MM/yyyy HH:mm"))); } catch { }
-                try { st.Add(new InfoRow("Ultima installazione riuscita", ((DateTime)r.LastInstallationSuccessDate).ToLocalTime().ToString("dd/MM/yyyy HH:mm"))); } catch { }
+                try { st.Add(new InfoRow("Last successful scan", ((DateTime)r.LastSearchSuccessDate).ToLocalTime().ToString(Fmt.DateTime))); } catch { }
+                try { st.Add(new InfoRow("Last successful install", ((DateTime)r.LastInstallationSuccessDate).ToLocalTime().ToString(Fmt.DateTime))); } catch { }
             }
             catch { }
 
-            // Aggiornamento mensile del sistema operativo, es. "2026-10 Aggiornamento della sicurezza (KB5127648) (26300.9711)"
-            var lastCu = s.History.FirstOrDefault(h => h.ResultKind == "OK" && h.Operation == "Installazione"
-                && Regex.IsMatch(h.Title, @"^\d{4}-\d{2} .*(cumulativ|Cumulative|Aggiornamento della sicurezza|Security Update|Aggiornamento .*per Windows)", RegexOptions.IgnoreCase)
+            // Monthly OS update; titles follow the OS language, e.g. "2026-10 Security Update (KB5127648) (26300.9711)"
+            // or "2026-10 Aggiornamento della sicurezza (KB5127648) (26300.9711)"
+            var lastCu = s.History.FirstOrDefault(h => h.ResultKind == "OK" && h.Operation == "Install"
+                && Regex.IsMatch(h.Title, @"^\d{4}-\d{2} .*(cumulativ|Cumulative|Aggiornamento della sicurezza|Security Update|Aggiornamento .*per Windows|Update for Windows)", RegexOptions.IgnoreCase)
                 && !Regex.IsMatch(h.Title, @"\.NET", RegexOptions.IgnoreCase));
-            if (lastCu != null) st.Add(new InfoRow("Ultimo aggiornamento mensile", lastCu.Title + " · " + lastCu.Date.ToString("dd/MM/yyyy")));
+            if (lastCu != null) st.Add(new InfoRow("Last monthly update", lastCu.Title + " · " + lastCu.Date.ToString(Fmt.Date)));
             int failed = s.History.Count(h => h.ResultKind == "KO" && h.Date > DateTime.Now.AddDays(-30));
-            st.Add(new InfoRow("Installazioni non riuscite (30 gg)", failed.ToString()));
+            st.Add(new InfoRow("Failed installs (30 days)", failed.ToString()));
 
             bool reboot = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired") != null
                 || Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending") != null;
-            st.Add(new InfoRow("Riavvio in sospeso", reboot ? "Sì" : "No"));
+            st.Add(new InfoRow("Pending restart", reboot ? "Yes" : "No"));
         }
 
         static string PolicyStateValue(string name)
@@ -883,7 +882,7 @@ namespace PolicyViewer
 
         static Encoding ConsoleEncoding()
         {
-            // TextInfo.OEMCodePage non e' affidabile con impostazioni internazionali personalizzate: si usa quella del sistema
+            // TextInfo.OEMCodePage is unreliable with customized regional settings: use the system one
             try { return Encoding.GetEncoding(GetOEMCP()); } catch { return Encoding.Default; }
         }
 
@@ -911,11 +910,13 @@ namespace PolicyViewer
 
     #endregion
 
-    #region Sicurezza
+    #region Security
 
     static class Security
     {
         const string IntuneLabel = "Intune (MDM)";
+        public const string AsrArea = "Attack surface reduction (ASR)";
+        public const string ExclusionsArea = "Microsoft Defender · exclusions";
 
         static readonly HashSet<string> Areas = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -941,7 +942,7 @@ namespace PolicyViewer
 
         static readonly Regex DefenderText = new Regex(@"Defender|AttackSurfaceReduction|ExploitGuard|Advanced Threat Protection", RegexOptions.IgnoreCase);
 
-        // Pagina Defender: impostazioni dell'antivirus/EDR (configurate da Intune o GPO e valori effettivi); il firewall resta in Sicurezza
+        // Defender page: antivirus/EDR settings (configured by Intune or GPO, and effective values); the firewall stays under Security
         public static bool IsDefender(PolicyItem i)
         {
             if (!i.IsSecurity) return false;
@@ -950,6 +951,7 @@ namespace PolicyViewer
             return DefenderText.IsMatch(text) && text.IndexOf("Firewall", StringComparison.OrdinalIgnoreCase) < 0;
         }
 
+        // gpresult categories follow the OS language: match both English and Italian terms
         static readonly Regex SecurityCategory = new Regex(@"Defender|BitLocker|Firewall|SmartScreen|Credential|Sicurezza|Security|LAPS|Device Guard|Exploit", RegexOptions.IgnoreCase);
 
         public static bool IsSecurityGp(string extName, string category, string key)
@@ -959,7 +961,7 @@ namespace PolicyViewer
             return key != null && IsSecurityPath(key);
         }
 
-        #region Supporto
+        #region Helpers
 
         static List<ManagementBaseObject> Wmi(string ns, string query)
         {
@@ -982,20 +984,20 @@ namespace PolicyViewer
 
         static string CimDate(object v)
         {
-            try { return ManagementDateTimeConverter.ToDateTime((string)v).ToString("dd/MM/yyyy HH:mm"); } catch { return null; }
+            try { return ManagementDateTimeConverter.ToDateTime((string)v).ToString(Fmt.DateTime); } catch { return null; }
         }
 
         static void AddEff(Snapshot s, string sourceShort, string source, string area, string name, string value, string description, string details, string path)
         {
             s.Items.Add(new PolicyItem
             {
-                Scope = "Macchina",
+                Scope = "Machine",
                 Source = source,
                 SourceShort = sourceShort,
                 SourceKind = "EFF",
                 Area = area,
                 Name = name,
-                Value = string.IsNullOrEmpty(value) ? "(vuoto)" : value,
+                Value = string.IsNullOrEmpty(value) ? "(empty)" : value,
                 Description = description,
                 Details = details,
                 Path = path,
@@ -1005,7 +1007,7 @@ namespace PolicyViewer
 
         #endregion
 
-        #region Firewall Intune
+        #region Intune firewall
 
         public static void CollectFirewallMdm(Snapshot s)
         {
@@ -1026,10 +1028,10 @@ namespace PolicyViewer
             {
                 object raw = k.GetValue(vn);
                 string text = raw as string;
-                string name = vn, value = Collector.FormatValue(raw), details = "Chiave: HKLM\\" + path + "\nValore: " + vn;
+                string name = vn, value = Collector.FormatValue(raw), details = "Key: HKLM\\" + path + "\nValue: " + vn;
                 if (text != null && text.StartsWith("v2.", StringComparison.OrdinalIgnoreCase))
                 {
-                    // Formato regola: v2.32|Action=Allow|Active=TRUE|Dir=In|Protocol=6|LPort=443|App=...|Name=...|
+                    // Rule format: v2.32|Action=Allow|Active=TRUE|Dir=In|Protocol=6|LPort=443|App=...|Name=...|
                     var f = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                     foreach (string part in text.Split('|'))
                     {
@@ -1041,26 +1043,26 @@ namespace PolicyViewer
                     string v;
                     if (f.TryGetValue("Name", out v)) name = v;
                     var parts = new List<string>();
-                    if (f.TryGetValue("Action", out v)) parts.Add(v == "Allow" ? "Consenti" : v == "Block" ? "Blocca" : v);
-                    if (f.TryGetValue("Dir", out v)) parts.Add(v == "In" ? "In ingresso" : v == "Out" ? "In uscita" : v);
-                    if (f.TryGetValue("Protocol", out v)) parts.Add(v == "6" ? "TCP" : v == "17" ? "UDP" : v == "1" ? "ICMP" : "protocollo " + v);
-                    if (f.TryGetValue("LPort", out v)) parts.Add("porta locale " + v);
-                    if (f.TryGetValue("RPort", out v)) parts.Add("porta remota " + v);
+                    if (f.TryGetValue("Action", out v)) parts.Add(v);
+                    if (f.TryGetValue("Dir", out v)) parts.Add(v == "In" ? "Inbound" : v == "Out" ? "Outbound" : v);
+                    if (f.TryGetValue("Protocol", out v)) parts.Add(v == "6" ? "TCP" : v == "17" ? "UDP" : v == "1" ? "ICMP" : "protocol " + v);
+                    if (f.TryGetValue("LPort", out v)) parts.Add("local port " + v);
+                    if (f.TryGetValue("RPort", out v)) parts.Add("remote port " + v);
                     if (f.TryGetValue("App", out v)) parts.Add(System.IO.Path.GetFileName(v));
-                    if (f.TryGetValue("Active", out v) && v.Equals("FALSE", StringComparison.OrdinalIgnoreCase)) parts.Add("non attiva");
+                    if (f.TryGetValue("Active", out v) && v.Equals("FALSE", StringComparison.OrdinalIgnoreCase)) parts.Add("inactive");
                     value = string.Join("  ·  ", parts);
-                    details += "\nID regola: " + vn + "\n\n" + string.Join("\n", f.Select(x => x.Key + " = " + x.Value));
+                    details += "\nRule ID: " + vn + "\n\n" + string.Join("\n", f.Select(x => x.Key + " = " + x.Value));
                 }
                 s.Items.Add(new PolicyItem
                 {
-                    Scope = "Macchina",
+                    Scope = "Machine",
                     Source = IntuneLabel,
                     SourceShort = "Intune",
                     SourceKind = "MDM",
                     Area = "Firewall" + (sub.Length > 0 ? " · " + sub : ""),
                     Name = name,
                     Value = value,
-                    Description = sub == "FirewallRules" ? "Regola del firewall di Windows distribuita da Intune (CSP Firewall)." : null,
+                    Description = sub == "FirewallRules" ? "Windows Firewall rule deployed by Intune (Firewall CSP)." : null,
                     Details = details,
                     Path = "HKLM\\" + path + "\\" + vn,
                     IsSecurity = true,
@@ -1079,64 +1081,64 @@ namespace PolicyViewer
             public DefPref(string name, string description, Dictionary<int, string> map) { Name = name; Description = description; Map = map; }
         }
 
-        static readonly Dictionary<int, string> OffOnAudit = new Dictionary<int, string> { { 0, "Disattivata" }, { 1, "Attiva (blocco)" }, { 2, "Solo controllo (audit)" } };
+        static readonly Dictionary<int, string> OffOnAudit = new Dictionary<int, string> { { 0, "Off" }, { 1, "On (block)" }, { 2, "Audit only" } };
 
         static readonly DefPref[] DefenderPrefs =
         {
-            new DefPref("DisableRealtimeMonitoring", "Se Sì, la protezione in tempo reale è disattivata.", null),
-            new DefPref("DisableBehaviorMonitoring", "Se Sì, il monitoraggio del comportamento è disattivato.", null),
-            new DefPref("DisableIOAVProtection", "Se Sì, file e allegati scaricati non vengono analizzati.", null),
-            new DefPref("DisableScriptScanning", "Se Sì, gli script non vengono analizzati.", null),
-            new DefPref("DisableArchiveScanning", "Se Sì, gli archivi (zip, cab…) non vengono analizzati.", null),
-            new DefPref("DisableEmailScanning", "Se Sì, i messaggi di posta non vengono analizzati.", null),
-            new DefPref("DisableRemovableDriveScanning", "Se Sì, le unità rimovibili non vengono analizzate durante l'analisi completa.", null),
-            new DefPref("PUAProtection", "Protezione dalle applicazioni potenzialmente indesiderate (PUA).", OffOnAudit),
-            new DefPref("EnableNetworkProtection", "Protezione di rete: blocca connessioni verso domini e IP malevoli.", OffOnAudit),
-            new DefPref("EnableControlledFolderAccess", "Accesso controllato alle cartelle (protezione ransomware).",
-                new Dictionary<int, string> { { 0, "Disattivato" }, { 1, "Attivo (blocco)" }, { 2, "Solo controllo (audit)" }, { 3, "Blocca solo modifiche al disco" }, { 4, "Controlla solo modifiche al disco" } }),
-            new DefPref("MAPSReporting", "Partecipazione a Microsoft MAPS (protezione cloud).",
-                new Dictionary<int, string> { { 0, "Disattivata" }, { 1, "Base" }, { 2, "Avanzata" } }),
-            new DefPref("SubmitSamplesConsent", "Invio automatico dei campioni a Microsoft.",
-                new Dictionary<int, string> { { 0, "Chiedi sempre" }, { 1, "Invia automaticamente i campioni sicuri" }, { 2, "Non inviare mai" }, { 3, "Invia automaticamente tutti i campioni" } }),
-            new DefPref("CloudBlockLevel", "Livello di blocco della protezione cloud.",
-                new Dictionary<int, string> { { 0, "Predefinito" }, { 1, "Moderato" }, { 2, "Alto" }, { 4, "Alto+" }, { 6, "Tolleranza zero" } }),
-            new DefPref("CloudExtendedTimeout", "Secondi aggiuntivi di attesa della verifica cloud prima di consentire un file.", null),
-            new DefPref("SignatureUpdateInterval", "Intervallo di controllo aggiornamenti delle firme (ore; 0 = predefinito).", null),
-            new DefPref("ScanScheduleDay", "Giorno dell'analisi pianificata.",
-                new Dictionary<int, string> { { 0, "Ogni giorno" }, { 1, "Domenica" }, { 2, "Lunedì" }, { 3, "Martedì" }, { 4, "Mercoledì" }, { 5, "Giovedì" }, { 6, "Venerdì" }, { 7, "Sabato" }, { 8, "Mai" } }),
-            new DefPref("ScanParameters", "Tipo di analisi pianificata.", new Dictionary<int, string> { { 1, "Analisi rapida" }, { 2, "Analisi completa" } }),
-            new DefPref("EnableFileHashComputation", "Calcolo dell'hash dei file per gli indicatori di compromissione.", null),
+            new DefPref("DisableRealtimeMonitoring", "If Yes, real-time protection is turned off.", null),
+            new DefPref("DisableBehaviorMonitoring", "If Yes, behavior monitoring is turned off.", null),
+            new DefPref("DisableIOAVProtection", "If Yes, downloaded files and attachments are not scanned.", null),
+            new DefPref("DisableScriptScanning", "If Yes, scripts are not scanned.", null),
+            new DefPref("DisableArchiveScanning", "If Yes, archives (zip, cab…) are not scanned.", null),
+            new DefPref("DisableEmailScanning", "If Yes, email messages are not scanned.", null),
+            new DefPref("DisableRemovableDriveScanning", "If Yes, removable drives are not scanned during a full scan.", null),
+            new DefPref("PUAProtection", "Protection against potentially unwanted applications (PUA).", OffOnAudit),
+            new DefPref("EnableNetworkProtection", "Network protection: blocks connections to malicious domains and IPs.", OffOnAudit),
+            new DefPref("EnableControlledFolderAccess", "Controlled folder access (ransomware protection).",
+                new Dictionary<int, string> { { 0, "Off" }, { 1, "On (block)" }, { 2, "Audit only" }, { 3, "Block disk modification only" }, { 4, "Audit disk modification only" } }),
+            new DefPref("MAPSReporting", "Microsoft MAPS membership (cloud-delivered protection).",
+                new Dictionary<int, string> { { 0, "Off" }, { 1, "Basic" }, { 2, "Advanced" } }),
+            new DefPref("SubmitSamplesConsent", "Automatic sample submission to Microsoft.",
+                new Dictionary<int, string> { { 0, "Always prompt" }, { 1, "Send safe samples automatically" }, { 2, "Never send" }, { 3, "Send all samples automatically" } }),
+            new DefPref("CloudBlockLevel", "Cloud-delivered protection blocking level.",
+                new Dictionary<int, string> { { 0, "Default" }, { 1, "Moderate" }, { 2, "High" }, { 4, "High+" }, { 6, "Zero tolerance" } }),
+            new DefPref("CloudExtendedTimeout", "Extra seconds to wait for the cloud check before allowing a file.", null),
+            new DefPref("SignatureUpdateInterval", "Signature update check interval (hours; 0 = default).", null),
+            new DefPref("ScanScheduleDay", "Day of the scheduled scan.",
+                new Dictionary<int, string> { { 0, "Every day" }, { 1, "Sunday" }, { 2, "Monday" }, { 3, "Tuesday" }, { 4, "Wednesday" }, { 5, "Thursday" }, { 6, "Friday" }, { 7, "Saturday" }, { 8, "Never" } }),
+            new DefPref("ScanParameters", "Scheduled scan type.", new Dictionary<int, string> { { 1, "Quick scan" }, { 2, "Full scan" } }),
+            new DefPref("EnableFileHashComputation", "File hash computation for indicators of compromise.", null),
         };
 
         static readonly Dictionary<string, string> AsrNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            { "56a863a9-875e-4185-98a7-b882c64b5ce5", "Blocca l'abuso di driver firmati vulnerabili" },
-            { "7674ba52-37eb-4a4f-a9a1-f0f9a1619a2c", "Impedisci ad Adobe Reader di creare processi figlio" },
-            { "d4f940ab-401b-4efc-aadc-ad5f3c50688a", "Impedisci alle app Office di creare processi figlio" },
-            { "9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2", "Blocca il furto di credenziali da LSASS" },
-            { "be9ba2d9-53ea-4cdc-84e5-9b1eeee46550", "Blocca contenuti eseguibili da client di posta e webmail" },
-            { "01443614-cd74-433a-b99e-2ecdc07bfc25", "Blocca eseguibili che non soddisfano criteri di diffusione, età o attendibilità" },
-            { "5beb7efe-fd9a-4556-801d-275e5ffc04cc", "Blocca l'esecuzione di script potenzialmente offuscati" },
-            { "d3e037e1-3eb8-44c8-a917-57927947596d", "Impedisci a JavaScript/VBScript di avviare contenuti scaricati" },
-            { "3b576869-a4ec-4529-8536-b80a7769e899", "Impedisci alle app Office di creare contenuti eseguibili" },
-            { "75668c1f-73b5-4cf0-bb93-3ecf5cb7cc84", "Impedisci alle app Office di iniettare codice in altri processi" },
-            { "26190899-1602-49e8-8b27-eb1d0a1ce869", "Impedisci alle app di comunicazione Office di creare processi figlio" },
-            { "e6db77e5-3df2-4cf1-b95a-636979351e5b", "Blocca la persistenza tramite sottoscrizioni a eventi WMI" },
-            { "d1e49aac-8f56-4280-b9ba-993a6d77406c", "Blocca la creazione di processi da comandi PSExec e WMI" },
-            { "b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4", "Blocca processi non attendibili e non firmati eseguiti da USB" },
-            { "92e97fa1-2edf-4476-bdd6-9dd0b4dddc7b", "Blocca le chiamate API Win32 dalle macro di Office" },
-            { "c1db55ab-c21a-4637-bb3f-a12568109d35", "Usa la protezione avanzata contro il ransomware" },
-            { "33ddedf1-c6e0-47cb-833e-de6133960387", "Blocca il riavvio del computer in modalità provvisoria" },
-            { "c0033c00-d16d-4114-a5a0-dc9b3a7d2ceb", "Blocca l'uso di strumenti di sistema copiati o impersonati" },
-            { "a8f5898e-1dc8-49a9-9878-85004b8a61e6", "Blocca la creazione di webshell per i server" },
+            { "56a863a9-875e-4185-98a7-b882c64b5ce5", "Block abuse of exploited vulnerable signed drivers" },
+            { "7674ba52-37eb-4a4f-a9a1-f0f9a1619a2c", "Block Adobe Reader from creating child processes" },
+            { "d4f940ab-401b-4efc-aadc-ad5f3c50688a", "Block all Office applications from creating child processes" },
+            { "9e6c4e1f-7d60-472f-ba1a-a39ef669e4b2", "Block credential stealing from the Windows local security authority subsystem (lsass.exe)" },
+            { "be9ba2d9-53ea-4cdc-84e5-9b1eeee46550", "Block executable content from email client and webmail" },
+            { "01443614-cd74-433a-b99e-2ecdc07bfc25", "Block executable files from running unless they meet a prevalence, age, or trusted list criterion" },
+            { "5beb7efe-fd9a-4556-801d-275e5ffc04cc", "Block execution of potentially obfuscated scripts" },
+            { "d3e037e1-3eb8-44c8-a917-57927947596d", "Block JavaScript or VBScript from launching downloaded executable content" },
+            { "3b576869-a4ec-4529-8536-b80a7769e899", "Block Office applications from creating executable content" },
+            { "75668c1f-73b5-4cf0-bb93-3ecf5cb7cc84", "Block Office applications from injecting code into other processes" },
+            { "26190899-1602-49e8-8b27-eb1d0a1ce869", "Block Office communication application from creating child processes" },
+            { "e6db77e5-3df2-4cf1-b95a-636979351e5b", "Block persistence through WMI event subscription" },
+            { "d1e49aac-8f56-4280-b9ba-993a6d77406c", "Block process creations originating from PSExec and WMI commands" },
+            { "b2b3f03d-6a65-4f7b-a9c7-1c7ef74a9ba4", "Block untrusted and unsigned processes that run from USB" },
+            { "92e97fa1-2edf-4476-bdd6-9dd0b4dddc7b", "Block Win32 API calls from Office macros" },
+            { "c1db55ab-c21a-4637-bb3f-a12568109d35", "Use advanced protection against ransomware" },
+            { "33ddedf1-c6e0-47cb-833e-de6133960387", "Block rebooting machine in Safe Mode" },
+            { "c0033c00-d16d-4114-a5a0-dc9b3a7d2ceb", "Block use of copied or impersonated system tools" },
+            { "a8f5898e-1dc8-49a9-9878-85004b8a61e6", "Block Webshell creation for Servers" },
         };
 
         static readonly Dictionary<int, string> AsrActions = new Dictionary<int, string>
         {
-            { 0, "Disattivata" }, { 1, "Blocca" }, { 2, "Controllo (audit)" }, { 5, "Non configurata" }, { 6, "Avvisa" },
+            { 0, "Off" }, { 1, "Block" }, { 2, "Audit" }, { 5, "Not configured" }, { 6, "Warn" },
         };
 
-        const string DefenderSource = "Microsoft Defender (configurazione effettiva)";
+        const string DefenderSource = "Microsoft Defender (effective configuration)";
 
         public static void CollectDefender(Snapshot s)
         {
@@ -1149,15 +1151,15 @@ namespace PolicyViewer
                 object v = P(pref, d.Name);
                 if (v == null) continue;
                 string text;
-                if (v is bool) text = (bool)v ? "Sì" : "No";
+                if (v is bool) text = (bool)v ? "Yes" : "No";
                 else
                 {
                     int n = Convert.ToInt32(v);
                     string mapped;
                     text = d.Map != null && d.Map.TryGetValue(n, out mapped) ? mapped + " (" + n + ")" : n.ToString();
                 }
-                AddEff(s, "Defender", DefenderSource, "Microsoft Defender · configurazione effettiva", d.Name, text, d.Description,
-                    "Valore effettivo letto da Defender (risultato di Intune, GPO e impostazioni locali).\nMSFT_MpPreference." + d.Name + " = " + v, path + "." + d.Name);
+                AddEff(s, "Defender", DefenderSource, "Microsoft Defender · effective configuration", d.Name, text, d.Description,
+                    "Effective value read from Defender (result of Intune, GPO and local settings).\nMSFT_MpPreference." + d.Name + " = " + v, path + "." + d.Name);
             }
 
             var ids = P(pref, "AttackSurfaceReductionRules_Ids") as string[];
@@ -1171,9 +1173,9 @@ namespace PolicyViewer
                     if (!AsrActions.TryGetValue(act, out actText)) actText = act.ToString();
                     string name;
                     if (!AsrNames.TryGetValue(ids[i], out name)) name = ids[i];
-                    AddEff(s, "Defender", DefenderSource, "Riduzione della superficie di attacco (ASR)", name, actText + " (" + act + ")",
-                        "Regola di riduzione della superficie di attacco di Microsoft Defender.",
-                        "GUID regola: " + ids[i] + "\nAzione: " + act + " (0 disattivata, 1 blocca, 2 audit, 6 avvisa)", path + ".AttackSurfaceReductionRules_Ids");
+                    AddEff(s, "Defender", DefenderSource, AsrArea, name, actText + " (" + act + ")",
+                        "Microsoft Defender attack surface reduction rule.",
+                        "Rule GUID: " + ids[i] + "\nAction: " + act + " (0 off, 1 block, 2 audit, 6 warn)", path + ".AttackSurfaceReductionRules_Ids");
                 }
             }
 
@@ -1181,87 +1183,87 @@ namespace PolicyViewer
             {
                 var list = P(pref, ex) as string[];
                 if (list == null || list.Length == 0) continue;
-                AddEff(s, "Defender", DefenderSource, "Microsoft Defender · esclusioni", ex, string.Join("; ", list),
-                    "Elementi esclusi dall'analisi o consentiti. Per gli utenti standard Defender non rivela il contenuto.", string.Join("\n", list), path + "." + ex);
+                AddEff(s, "Defender", DefenderSource, ExclusionsArea, ex, string.Join("; ", list),
+                    "Items excluded from scanning or allowed. For standard users Defender does not reveal the content.", string.Join("\n", list), path + "." + ex);
             }
         }
 
         #endregion
 
-        #region Criteri di sicurezza locali
+        #region Local security policy
 
         static readonly Dictionary<string, string> SecNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            { "MinimumPasswordAge", "Validità minima della password (giorni)" },
-            { "MaximumPasswordAge", "Validità massima della password (giorni)" },
-            { "MinimumPasswordLength", "Lunghezza minima della password" },
-            { "PasswordComplexity", "La password deve rispettare i requisiti di complessità" },
-            { "PasswordHistorySize", "Cronologia delle password (numero ricordate)" },
-            { "LockoutBadCount", "Soglia di blocco dell'account (tentativi errati)" },
-            { "ResetLockoutCount", "Reimposta il contatore dei blocchi dopo (minuti)" },
-            { "LockoutDuration", "Durata del blocco dell'account (minuti)" },
-            { "AllowAdministratorLockout", "Consenti il blocco dell'account Administrator" },
-            { "RequireLogonToChangePassword", "Richiedi l'accesso per cambiare la password" },
-            { "ForceLogoffWhenHourExpire", "Disconnetti allo scadere dell'orario di accesso" },
-            { "NewAdministratorName", "Nome dell'account Administrator" },
-            { "NewGuestName", "Nome dell'account Guest" },
-            { "ClearTextPassword", "Memorizza le password con crittografia reversibile" },
-            { "LSAAnonymousNameLookup", "Consenti la traduzione anonima SID/nome" },
-            { "EnableAdminAccount", "Account Administrator abilitato" },
-            { "EnableGuestAccount", "Account Guest abilitato" },
-            { "AuditSystemEvents", "Controllo eventi di sistema" },
-            { "AuditLogonEvents", "Controllo eventi di accesso" },
-            { "AuditObjectAccess", "Controllo accesso agli oggetti" },
-            { "AuditPrivilegeUse", "Controllo uso dei privilegi" },
-            { "AuditPolicyChange", "Controllo modifica dei criteri" },
-            { "AuditAccountManage", "Controllo gestione degli account" },
-            { "AuditProcessTracking", "Controllo tracciamento dei processi" },
-            { "AuditDSAccess", "Controllo accesso al servizio directory" },
-            { "AuditAccountLogon", "Controllo eventi di accesso all'account" },
-            { "SeNetworkLogonRight", "Accedi al computer dalla rete" },
-            { "SeInteractiveLogonRight", "Consenti accesso locale" },
-            { "SeRemoteInteractiveLogonRight", "Consenti accesso tramite Desktop remoto" },
-            { "SeDenyNetworkLogonRight", "Nega accesso al computer dalla rete" },
-            { "SeDenyInteractiveLogonRight", "Nega accesso locale" },
-            { "SeDenyRemoteInteractiveLogonRight", "Nega accesso tramite Desktop remoto" },
-            { "SeDenyBatchLogonRight", "Nega accesso come processo batch" },
-            { "SeDenyServiceLogonRight", "Nega accesso come servizio" },
-            { "SeBatchLogonRight", "Accesso come processo batch" },
-            { "SeServiceLogonRight", "Accesso come servizio" },
-            { "SeBackupPrivilege", "Backup di file e directory" },
-            { "SeRestorePrivilege", "Ripristino di file e directory" },
-            { "SeDebugPrivilege", "Debug di programmi" },
-            { "SeShutdownPrivilege", "Arresto del sistema" },
-            { "SeRemoteShutdownPrivilege", "Arresto forzato da un sistema remoto" },
-            { "SeTakeOwnershipPrivilege", "Acquisizione della proprietà di file o altri oggetti" },
-            { "SeLoadDriverPrivilege", "Caricamento e scaricamento dei driver di dispositivo" },
-            { "SeSecurityPrivilege", "Gestione del registro di controllo e di protezione" },
-            { "SeSystemtimePrivilege", "Modifica dell'ora di sistema" },
-            { "SeTimeZonePrivilege", "Modifica del fuso orario" },
-            { "SeImpersonatePrivilege", "Rappresentazione di un client dopo l'autenticazione" },
-            { "SeChangeNotifyPrivilege", "Ignora controllo incrociato" },
-            { "SeCreateSymbolicLinkPrivilege", "Creazione di collegamenti simbolici" },
-            { "SeManageVolumePrivilege", "Esecuzione delle attività di manutenzione volume" },
-            { "SeTcbPrivilege", "Agire come parte del sistema operativo" },
-            { "SeSystemEnvironmentPrivilege", "Modifica dei valori di ambiente del firmware" },
-            { "SeUndockPrivilege", "Rimozione del computer dall'alloggiamento" },
-            { "SeIncreaseQuotaPrivilege", "Regolazione delle quote di memoria per un processo" },
-            { "SeAssignPrimaryTokenPrivilege", "Sostituzione di token a livello di processo" },
-            { "SeCreateGlobalPrivilege", "Creazione di oggetti globali" },
-            { "SeProfileSingleProcessPrivilege", "Profilo di singolo processo" },
-            { "SeSystemProfilePrivilege", "Profilo delle prestazioni del sistema" },
-            { "SeIncreaseBasePriorityPrivilege", "Aumento della priorità di pianificazione" },
-            { "SeCreatePagefilePrivilege", "Creazione di un file di paging" },
-            { "SeIncreaseWorkingSetPrivilege", "Aumento del working set di un processo" },
-            { "SeDelegateSessionUserImpersonatePrivilege", "Ottenimento di un token di rappresentazione per un altro utente" },
+            { "MinimumPasswordAge", "Minimum password age (days)" },
+            { "MaximumPasswordAge", "Maximum password age (days)" },
+            { "MinimumPasswordLength", "Minimum password length" },
+            { "PasswordComplexity", "Password must meet complexity requirements" },
+            { "PasswordHistorySize", "Enforce password history (passwords remembered)" },
+            { "LockoutBadCount", "Account lockout threshold (invalid attempts)" },
+            { "ResetLockoutCount", "Reset account lockout counter after (minutes)" },
+            { "LockoutDuration", "Account lockout duration (minutes)" },
+            { "AllowAdministratorLockout", "Allow Administrator account lockout" },
+            { "RequireLogonToChangePassword", "Require logon to change password" },
+            { "ForceLogoffWhenHourExpire", "Force logoff when logon hours expire" },
+            { "NewAdministratorName", "Rename administrator account" },
+            { "NewGuestName", "Rename guest account" },
+            { "ClearTextPassword", "Store passwords using reversible encryption" },
+            { "LSAAnonymousNameLookup", "Allow anonymous SID/Name translation" },
+            { "EnableAdminAccount", "Administrator account status" },
+            { "EnableGuestAccount", "Guest account status" },
+            { "AuditSystemEvents", "Audit system events" },
+            { "AuditLogonEvents", "Audit logon events" },
+            { "AuditObjectAccess", "Audit object access" },
+            { "AuditPrivilegeUse", "Audit privilege use" },
+            { "AuditPolicyChange", "Audit policy change" },
+            { "AuditAccountManage", "Audit account management" },
+            { "AuditProcessTracking", "Audit process tracking" },
+            { "AuditDSAccess", "Audit directory service access" },
+            { "AuditAccountLogon", "Audit account logon events" },
+            { "SeNetworkLogonRight", "Access this computer from the network" },
+            { "SeInteractiveLogonRight", "Allow log on locally" },
+            { "SeRemoteInteractiveLogonRight", "Allow log on through Remote Desktop Services" },
+            { "SeDenyNetworkLogonRight", "Deny access to this computer from the network" },
+            { "SeDenyInteractiveLogonRight", "Deny log on locally" },
+            { "SeDenyRemoteInteractiveLogonRight", "Deny log on through Remote Desktop Services" },
+            { "SeDenyBatchLogonRight", "Deny log on as a batch job" },
+            { "SeDenyServiceLogonRight", "Deny log on as a service" },
+            { "SeBatchLogonRight", "Log on as a batch job" },
+            { "SeServiceLogonRight", "Log on as a service" },
+            { "SeBackupPrivilege", "Back up files and directories" },
+            { "SeRestorePrivilege", "Restore files and directories" },
+            { "SeDebugPrivilege", "Debug programs" },
+            { "SeShutdownPrivilege", "Shut down the system" },
+            { "SeRemoteShutdownPrivilege", "Force shutdown from a remote system" },
+            { "SeTakeOwnershipPrivilege", "Take ownership of files or other objects" },
+            { "SeLoadDriverPrivilege", "Load and unload device drivers" },
+            { "SeSecurityPrivilege", "Manage auditing and security log" },
+            { "SeSystemtimePrivilege", "Change the system time" },
+            { "SeTimeZonePrivilege", "Change the time zone" },
+            { "SeImpersonatePrivilege", "Impersonate a client after authentication" },
+            { "SeChangeNotifyPrivilege", "Bypass traverse checking" },
+            { "SeCreateSymbolicLinkPrivilege", "Create symbolic links" },
+            { "SeManageVolumePrivilege", "Perform volume maintenance tasks" },
+            { "SeTcbPrivilege", "Act as part of the operating system" },
+            { "SeSystemEnvironmentPrivilege", "Modify firmware environment values" },
+            { "SeUndockPrivilege", "Remove computer from docking station" },
+            { "SeIncreaseQuotaPrivilege", "Adjust memory quotas for a process" },
+            { "SeAssignPrimaryTokenPrivilege", "Replace a process level token" },
+            { "SeCreateGlobalPrivilege", "Create global objects" },
+            { "SeProfileSingleProcessPrivilege", "Profile single process" },
+            { "SeSystemProfilePrivilege", "Profile system performance" },
+            { "SeIncreaseBasePriorityPrivilege", "Increase scheduling priority" },
+            { "SeCreatePagefilePrivilege", "Create a pagefile" },
+            { "SeIncreaseWorkingSetPrivilege", "Increase a process working set" },
+            { "SeDelegateSessionUserImpersonatePrivilege", "Obtain an impersonation token for another user in the same session" },
         };
 
         static readonly Dictionary<string, string> SecSections = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            { "System Access", "Criteri account" },
-            { "Event Audit", "Criteri di controllo" },
-            { "Privilege Rights", "Assegnazione diritti utente" },
-            { "Registry Values", "Opzioni di sicurezza" },
+            { "System Access", "Account Policies" },
+            { "Event Audit", "Audit Policy" },
+            { "Privilege Rights", "User Rights Assignment" },
+            { "Registry Values", "Security Options" },
         };
 
         public static void CollectSecedit(Snapshot s)
@@ -1270,7 +1272,7 @@ namespace PolicyViewer
             try
             {
                 string output = Collector.RunProcess("secedit.exe", "/export /cfg \"" + file + "\" /areas SECURITYPOLICY USER_RIGHTS /quiet", 60000);
-                if (!File.Exists(file)) throw new Exception(string.IsNullOrWhiteSpace(output) ? "secedit non ha prodotto risultati" : output.Trim());
+                if (!File.Exists(file)) throw new Exception(string.IsNullOrWhiteSpace(output) ? "secedit produced no results" : output.Trim());
                 string section = null;
                 foreach (string line in File.ReadAllLines(file))
                 {
@@ -1292,7 +1294,7 @@ namespace PolicyViewer
             string name, value = raw.Trim('"');
             if (section == "Registry Values")
             {
-                // MACHINE\System\CurrentControlSet\Control\Lsa\LmCompatibilityLevel=4,5  (tipo,valore)
+                // MACHINE\System\CurrentControlSet\Control\Lsa\LmCompatibilityLevel=4,5  (type,value)
                 name = key.Substring(key.LastIndexOf('\\') + 1);
                 int comma = raw.IndexOf(',');
                 if (comma > 0) value = raw.Substring(comma + 1).Trim('"').Replace("\",\"", "; ");
@@ -1309,20 +1311,20 @@ namespace PolicyViewer
                 {
                     switch (raw)
                     {
-                        case "0": value = "Nessun controllo (0)"; break;
-                        case "1": value = "Operazioni riuscite (1)"; break;
-                        case "2": value = "Operazioni non riuscite (2)"; break;
-                        case "3": value = "Riuscite e non riuscite (3)"; break;
+                        case "0": value = "No auditing (0)"; break;
+                        case "1": value = "Success (1)"; break;
+                        case "2": value = "Failure (2)"; break;
+                        case "3": value = "Success and failure (3)"; break;
                     }
                 }
                 else if (key == "PasswordComplexity" || key == "ClearTextPassword" || key == "EnableAdminAccount" || key == "EnableGuestAccount"
                     || key == "RequireLogonToChangePassword" || key == "ForceLogoffWhenHourExpire" || key == "LSAAnonymousNameLookup" || key == "AllowAdministratorLockout")
-                    value = raw == "1" ? "Sì (1)" : raw == "0" ? "No (0)" : raw;
+                    value = raw == "1" ? "Yes (1)" : raw == "0" ? "No (0)" : raw;
             }
-            AddEff(s, "Criteri locali", "Criteri di sicurezza locali (effettivi, da secedit)", "Criteri locali · " + label, name, value,
-                section == "Registry Values" ? "Opzione di sicurezza: " + key : null,
-                "Sezione secedit: [" + section + "]\nChiave: " + key + "\nValore grezzo: " + raw
-                    + "\n\nValore effettivo dei criteri di sicurezza locali (risultato di Intune, GPO e configurazione locale).",
+            AddEff(s, "Local policy", "Local security policy (effective, from secedit)", "Local policy · " + label, name, value,
+                section == "Registry Values" ? "Security option: " + key : null,
+                "secedit section: [" + section + "]\nKey: " + key + "\nRaw value: " + raw
+                    + "\n\nEffective value of the local security policy (result of Intune, GPO and local configuration).",
                 "secedit [" + section + "] " + key);
         }
 
@@ -1335,7 +1337,7 @@ namespace PolicyViewer
 
         #endregion
 
-        #region Stato
+        #region Status
 
         public static void BuildStatus(Snapshot s)
         {
@@ -1346,22 +1348,22 @@ namespace PolicyViewer
             if (mp != null)
             {
                 string mode = P(mp, "AMRunningMode") as string;
-                ds.Add(new InfoRow("Antivirus", "Microsoft Defender " + (B(P(mp, "AntivirusEnabled")) ? "attivo" : "non attivo") + (mode != null ? " · modalità " + mode : "")));
-                ds.Add(new InfoRow("Protezione in tempo reale", B(P(mp, "RealTimeProtectionEnabled")) ? "Attiva" : "Non attiva"));
-                ds.Add(new InfoRow("Protezione da manomissioni", B(P(mp, "IsTamperProtected")) ? "Attiva" : "Non attiva"));
+                ds.Add(new InfoRow("Antivirus", "Microsoft Defender " + (B(P(mp, "AntivirusEnabled")) ? "on" : "off") + (mode != null ? " · mode " + mode : "")));
+                ds.Add(new InfoRow("Real-time protection", B(P(mp, "RealTimeProtectionEnabled")) ? "On" : "Off"));
+                ds.Add(new InfoRow("Tamper protection", B(P(mp, "IsTamperProtected")) ? "On" : "Off"));
                 object age = P(mp, "AntivirusSignatureAge");
-                ds.Add(new InfoRow("Firme antivirus", (CimDate(P(mp, "AntivirusSignatureLastUpdated")) ?? "?") + (age != null ? " (" + age + " gg)" : "") + " · " + P(mp, "AntivirusSignatureVersion")));
+                ds.Add(new InfoRow("Antivirus signatures", (CimDate(P(mp, "AntivirusSignatureLastUpdated")) ?? "?") + (age != null ? " (" + age + " d)" : "") + " · " + P(mp, "AntivirusSignatureVersion")));
                 string quick = CimDate(P(mp, "QuickScanEndTime")), full = CimDate(P(mp, "FullScanEndTime"));
-                ds.Add(new InfoRow("Ultima analisi rapida / completa", (quick ?? "mai") + " / " + (full ?? "mai")));
+                ds.Add(new InfoRow("Last quick / full scan", (quick ?? "never") + " / " + (full ?? "never")));
             }
-            else ds.Add(new InfoRow("Antivirus", "Microsoft Defender non disponibile"));
+            else ds.Add(new InfoRow("Antivirus", "Microsoft Defender not available"));
             using (var k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows Advanced Threat Protection\Status"))
             {
                 object v = k == null ? null : k.GetValue("OnboardingState");
-                ds.Add(new InfoRow("Defender for Endpoint", v != null && Convert.ToInt32(v) == 1 ? "Dispositivo onboardato" : "Non onboardato"));
+                ds.Add(new InfoRow("Defender for Endpoint", v != null && Convert.ToInt32(v) == 1 ? "Device onboarded" : "Not onboarded"));
             }
             var av = Wmi(@"root\SecurityCenter2", "SELECT displayName FROM AntiVirusProduct").Select(o => P(o, "displayName") as string).Where(n => n != null).Distinct().ToList();
-            if (av.Count > 0) ds.Add(new InfoRow("Antivirus registrati", string.Join(", ", av)));
+            if (av.Count > 0) ds.Add(new InfoRow("Registered antivirus", string.Join(", ", av)));
 
             var vols = Wmi(@"root\cimv2\Security\MicrosoftVolumeEncryption", "SELECT DriveLetter,ProtectionStatus,EncryptionMethod,ConversionStatus FROM Win32_EncryptableVolume")
                 .Where(v => P(v, "DriveLetter") != null).ToList();
@@ -1370,9 +1372,9 @@ namespace PolicyViewer
                 foreach (var v in vols)
                 {
                     int prot = Convert.ToInt32(P(v, "ProtectionStatus") ?? 0), method = Convert.ToInt32(P(v, "EncryptionMethod") ?? 0), conv = Convert.ToInt32(P(v, "ConversionStatus") ?? 0);
-                    string m = method == 3 ? "AES 128" : method == 4 ? "AES 256" : method == 6 ? "XTS-AES 128" : method == 7 ? "XTS-AES 256" : method == 0 ? "non crittografato" : "metodo " + method;
-                    string c = conv == 1 ? "crittografato" : conv == 0 ? "decrittografato" : conv == 2 ? "crittografia in corso" : conv == 3 ? "decrittografia in corso" : "stato " + conv;
-                    st.Add(new InfoRow("BitLocker " + P(v, "DriveLetter"), (prot == 1 ? "Protezione attiva" : "Protezione non attiva") + " · " + m + " · " + c));
+                    string m = method == 3 ? "AES 128" : method == 4 ? "AES 256" : method == 6 ? "XTS-AES 128" : method == 7 ? "XTS-AES 256" : method == 0 ? "not encrypted" : "method " + method;
+                    string c = conv == 1 ? "fully encrypted" : conv == 0 ? "fully decrypted" : conv == 2 ? "encryption in progress" : conv == 3 ? "decryption in progress" : "status " + conv;
+                    st.Add(new InfoRow("BitLocker " + P(v, "DriveLetter"), (prot == 1 ? "Protection on" : "Protection off") + " · " + m + " · " + c));
                 }
             }
             else st.Add(new InfoRow("BitLocker " + Environment.GetEnvironmentVariable("SystemDrive"), BitLockerFromShell()));
@@ -1380,29 +1382,28 @@ namespace PolicyViewer
             var fw = Wmi(@"root\StandardCimv2", "SELECT Name,Enabled FROM MSFT_NetFirewallProfile");
             if (fw.Count > 0)
             {
-                var names = new Dictionary<string, string> { { "Domain", "Dominio" }, { "Private", "Privato" }, { "Public", "Pubblico" } };
                 st.Add(new InfoRow("Firewall", string.Join("  ·  ", fw.Select(p =>
                 {
                     string n = P(p, "Name") as string ?? "?";
-                    return (names.ContainsKey(n) ? names[n] : n) + ": " + (Convert.ToInt32(P(p, "Enabled") ?? 0) == 1 ? "attivo" : "non attivo");
+                    return n + ": " + (Convert.ToInt32(P(p, "Enabled") ?? 0) == 1 ? "on" : "off");
                 }))));
             }
             int fwRules = s.Items.Count(i => i.Area == "Firewall · FirewallRules");
-            if (fwRules > 0) st.Add(new InfoRow("Regole firewall da Intune", fwRules.ToString()));
+            if (fwRules > 0) st.Add(new InfoRow("Firewall rules from Intune", fwRules.ToString()));
 
             using (var k = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\SecureBoot\State"))
             {
                 object v = k == null ? null : k.GetValue("UEFISecureBootEnabled");
-                st.Add(new InfoRow("Secure Boot", v == null ? "Non supportato / BIOS legacy" : Convert.ToInt32(v) == 1 ? "Attivo" : "Non attivo"));
+                st.Add(new InfoRow("Secure Boot", v == null ? "Not supported / legacy BIOS" : Convert.ToInt32(v) == 1 ? "On" : "Off"));
             }
 
             var tpm = Wmi(@"root\cimv2\Security\MicrosoftTpm", "SELECT * FROM Win32_Tpm").FirstOrDefault();
             if (tpm != null)
             {
                 string spec = (P(tpm, "SpecVersion") as string ?? "").Split(',')[0].Trim();
-                st.Add(new InfoRow("TPM", (B(P(tpm, "IsEnabled_InitialValue")) ? "Abilitato" : "Non abilitato") + (B(P(tpm, "IsActivated_InitialValue")) ? ", attivato" : "") + (spec.Length > 0 ? " · versione " + spec : "")));
+                st.Add(new InfoRow("TPM", (B(P(tpm, "IsEnabled_InitialValue")) ? "Enabled" : "Not enabled") + (B(P(tpm, "IsActivated_InitialValue")) ? ", activated" : "") + (spec.Length > 0 ? " · version " + spec : "")));
             }
-            else st.Add(new InfoRow("TPM", s.IsAdmin ? "Non rilevato" : "Richiede privilegi di amministratore"));
+            else st.Add(new InfoRow("TPM", s.IsAdmin ? "Not detected" : "Requires administrator rights"));
 
             var dg = Wmi(@"root\Microsoft\Windows\DeviceGuard", "SELECT * FROM Win32_DeviceGuard").FirstOrDefault();
             if (dg != null)
@@ -1411,35 +1412,35 @@ namespace PolicyViewer
                 var running = (P(dg, "SecurityServicesRunning") as Array ?? new int[0]).Cast<object>().Select(Convert.ToInt32).ToList();
                 var services = new List<string>();
                 if (running.Contains(1)) services.Add("Credential Guard");
-                if (running.Contains(2)) services.Add("Integrità della memoria (HVCI)");
+                if (running.Contains(2)) services.Add("Memory integrity (HVCI)");
                 if (running.Contains(3)) services.Add("System Guard Secure Launch");
-                st.Add(new InfoRow("Sicurezza basata su virtualizzazione", (vbs == 2 ? "In esecuzione" : vbs == 1 ? "Abilitata, non in esecuzione" : "Non attiva")
+                st.Add(new InfoRow("Virtualization-based security", (vbs == 2 ? "Running" : vbs == 1 ? "Enabled, not running" : "Off")
                     + (services.Count > 0 ? " · " + string.Join(", ", services) : "")));
             }
 
-            var asr = s.Items.Where(i => i.Area == "Riduzione della superficie di attacco (ASR)").ToList();
+            var asr = s.Items.Where(i => i.Area == AsrArea).ToList();
             if (asr.Count > 0)
-                ds.Add(new InfoRow("Regole ASR", asr.Count(i => i.Value.StartsWith("Blocca")) + " in blocco · " + asr.Count(i => i.Value.StartsWith("Controllo")) + " in audit · " + asr.Count(i => i.Value.StartsWith("Avvisa")) + " in avviso"));
+                ds.Add(new InfoRow("ASR rules", asr.Count(i => i.Value.StartsWith("Block")) + " block · " + asr.Count(i => i.Value.StartsWith("Audit")) + " audit · " + asr.Count(i => i.Value.StartsWith("Warn")) + " warn"));
 
             using (var k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"))
             {
                 object v = k == null ? null : k.GetValue("EnableLUA");
-                st.Add(new InfoRow("Controllo account utente (UAC)", v != null && Convert.ToInt32(v) == 0 ? "Disattivato" : "Attivo"));
+                st.Add(new InfoRow("User Account Control (UAC)", v != null && Convert.ToInt32(v) == 0 ? "Off" : "On"));
             }
 
-            string laps = "Non configurato";
+            string laps = "Not configured";
             using (var k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\PolicyManager\current\device\LAPS"))
             using (var k2 = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Policies\LAPS"))
             using (var k3 = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Policies\Microsoft Services\AdmPwd"))
             {
-                if (k != null && k.ValueCount > 0) laps = "Configurato da Intune (Windows LAPS)";
-                else if (k2 != null && k2.ValueCount > 0) laps = "Configurato (Windows LAPS)";
-                else if (k3 != null && k3.ValueCount > 0) laps = "Configurato (LAPS legacy)";
+                if (k != null && k.ValueCount > 0) laps = "Configured by Intune (Windows LAPS)";
+                else if (k2 != null && k2.ValueCount > 0) laps = "Configured (Windows LAPS)";
+                else if (k3 != null && k3.ValueCount > 0) laps = "Configured (legacy LAPS)";
             }
             st.Add(new InfoRow("LAPS", laps));
         }
 
-        // Stato BitLocker leggibile anche dagli utenti standard (proprieta' della shell)
+        // BitLocker status readable by standard users too (shell property)
         static string BitLockerFromShell()
         {
             try
@@ -1448,16 +1449,16 @@ namespace PolicyViewer
                 object v = shell.NameSpace(17).ParseName(Environment.GetEnvironmentVariable("SystemDrive")).ExtendedProperty("System.Volume.BitLockerProtection");
                 switch (v == null ? -1 : Convert.ToInt32(v))
                 {
-                    case 1: return "Protezione attiva";
-                    case 2: return "Protezione non attiva";
-                    case 3: return "Crittografia in corso";
-                    case 4: return "Decrittografia in corso";
-                    case 5: return "Protezione sospesa";
-                    case 6: return "Bloccato";
-                    default: return "Non disponibile";
+                    case 1: return "Protection on";
+                    case 2: return "Protection off";
+                    case 3: return "Encryption in progress";
+                    case 4: return "Decryption in progress";
+                    case 5: return "Protection suspended";
+                    case 6: return "Locked";
+                    default: return "Not available";
                 }
             }
-            catch { return "Non disponibile"; }
+            catch { return "Not available"; }
         }
 
         #endregion
@@ -1465,88 +1466,88 @@ namespace PolicyViewer
 
     #endregion
 
-    #region Descrizioni impostazioni Windows Update
+    #region Windows Update setting descriptions
 
     static class Descriptions
     {
         static readonly Dictionary<string, string> Text = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            { "AllowAutoUpdate", "Comportamento degli aggiornamenti automatici: download, installazione e gestione del riavvio." },
-            { "AllowMUUpdateService", "Consente di ricevere da Windows Update anche gli aggiornamenti di altri prodotti Microsoft (es. Office)." },
-            { "AllowUpdateService", "Consente al dispositivo di contattare il servizio Microsoft Update." },
-            { "ExcludeWUDriversInQualityUpdate", "Esclude i driver dagli aggiornamenti qualitativi di Windows Update." },
-            { "ExcludeWUDrivers", "Esclusione effettiva dei driver dagli aggiornamenti qualitativi." },
-            { "ExcludeWUDriversInQualityUpdates", "Esclude i driver dagli aggiornamenti qualitativi di Windows Update." },
-            { "DeferQualityUpdatesPeriodInDays", "Giorni di rinvio degli aggiornamenti qualitativi (cumulativi mensili) rispetto al rilascio." },
-            { "DeferFeatureUpdatesPeriodInDays", "Giorni di rinvio degli aggiornamenti di funzionalità (nuova versione di Windows) rispetto al rilascio." },
-            { "DeferQualityUpdates", "Indica se il rinvio degli aggiornamenti qualitativi è attivo." },
-            { "DeferFeatureUpdates", "Indica se il rinvio degli aggiornamenti di funzionalità è attivo." },
-            { "QualityUpdatesDeferralInDays", "Rinvio degli aggiornamenti qualitativi effettivamente applicato dal client (giorni)." },
-            { "FeatureUpdatesDeferralInDays", "Rinvio degli aggiornamenti di funzionalità effettivamente applicato dal client (giorni)." },
-            { "PauseQualityUpdates", "Sospensione temporanea degli aggiornamenti qualitativi." },
-            { "PauseFeatureUpdates", "Sospensione temporanea degli aggiornamenti di funzionalità." },
-            { "PauseQualityUpdatesStartTime", "Data di inizio della sospensione degli aggiornamenti qualitativi." },
-            { "PauseFeatureUpdatesStartTime", "Data di inizio della sospensione degli aggiornamenti di funzionalità." },
-            { "SetEDURestart", "Modalità di riavvio per dispositivi didattici: riavvio solo fuori dall'orario di attività e senza utenti connessi." },
-            { "ActiveHoursStart", "Inizio dell'orario di attività: in questa fascia Windows non riavvia automaticamente il PC." },
-            { "ActiveHoursEnd", "Fine dell'orario di attività." },
-            { "ActiveHoursMaxRange", "Durata massima che l'utente può impostare per l'orario di attività." },
-            { "ConfigureFeatureUpdateUninstallPeriod", "Giorni entro cui è possibile disinstallare un aggiornamento di funzionalità e tornare alla versione precedente." },
-            { "SetDisablePauseUXAccess", "Se attivo, nasconde all'utente il comando \"Sospendi aggiornamenti\"." },
-            { "SetDisableUXWUAccess", "Se attivo, impedisce all'utente di usare le funzioni di Windows Update (ricerca e download manuali)." },
-            { "BranchReadinessLevel", "Canale di rilascio da cui il dispositivo riceve gli aggiornamenti di funzionalità." },
-            { "ManagePreviewBuilds", "Gestione delle build preview (programma Windows Insider)." },
-            { "ConfigureDeadlineForFeatureUpdates", "Giorni dopo i quali installazione e riavvio di un aggiornamento di funzionalità diventano obbligatori." },
-            { "ConfigureDeadlineForQualityUpdates", "Giorni dopo i quali installazione e riavvio di un aggiornamento qualitativo diventano obbligatori." },
-            { "ConfigureDeadlineGracePeriod", "Giorni di tolleranza dopo la scadenza prima del riavvio forzato (aggiornamenti qualitativi)." },
-            { "ConfigureDeadlineGracePeriodForFeatureUpdates", "Giorni di tolleranza dopo la scadenza prima del riavvio forzato (aggiornamenti di funzionalità)." },
-            { "ConfigureDeadlineNoAutoReboot", "Se attivo, il PC non si riavvia automaticamente prima della scadenza configurata." },
-            { "ScheduleImminentRestartWarning", "Preavviso del riavvio imminente." },
-            { "ScheduleRestartWarning", "Preavviso prima di un riavvio pianificato." },
-            { "UpdateNotificationLevel", "Livello delle notifiche di Windows Update mostrate all'utente." },
-            { "AllowRebootlessUpdates", "Consente gli aggiornamenti senza riavvio (hotpatch), dove supportati." },
-            { "DriverUpdateEnrolled", "Dispositivo registrato nel servizio di deployment di Windows Update for Business (Intune/Autopatch) per i driver." },
-            { "FeatureUpdateEnrolled", "Dispositivo registrato nel servizio di deployment di Windows Update for Business per gli aggiornamenti di funzionalità." },
-            { "QualityUpdateEnrolled", "Dispositivo registrato nel servizio di deployment di Windows Update for Business per gli aggiornamenti qualitativi (es. rilasci accelerati)." },
-            { "QuickMachineRecoveryEnrolled", "Registrazione al ripristino rapido della macchina (Quick Machine Recovery)." },
-            { "TargetReleaseVersion", "Versione di Windows bersaglio: il PC resta su questa versione o vi passa." },
-            { "TargetReleaseVersionInfo", "Versione di Windows bersaglio (es. 24H2)." },
-            { "ProductVersion", "Prodotto bersaglio per gli aggiornamenti di funzionalità (es. Windows 11)." },
-            { "WUServer", "Server WSUS da cui vengono scaricati gli aggiornamenti." },
-            { "UpdateServiceUrl", "Server WSUS da cui vengono scaricati gli aggiornamenti." },
-            { "WUStatusServer", "Server WSUS a cui vengono inviati i report." },
-            { "UseWUServer", "Se 1, il PC usa il server WSUS indicato in WUServer." },
-            { "NoAutoUpdate", "Se 1, gli aggiornamenti automatici sono disattivati." },
-            { "AUOptions", "Modalità aggiornamenti automatici da GPO." },
-            { "ScheduledInstallDay", "Giorno pianificato per l'installazione." },
-            { "ScheduledInstallTime", "Ora pianificata per l'installazione." },
-            { "DisableDualScan", "Impedisce la ricerca su Windows Update quando è configurato WSUS." },
-            { "DoNotConnectToWindowsUpdateInternetLocations", "Impedisce la connessione ai server Internet di Windows Update." },
-            { "SetPolicyDrivenUpdateSourceForFeatureUpdates", "Sorgente degli aggiornamenti di funzionalità (Windows Update o WSUS)." },
-            { "SetPolicyDrivenUpdateSourceForQualityUpdates", "Sorgente degli aggiornamenti qualitativi (Windows Update o WSUS)." },
-            { "SetPolicyDrivenUpdateSourceForDriverUpdates", "Sorgente degli aggiornamenti dei driver (Windows Update o WSUS)." },
-            { "SetPolicyDrivenUpdateSourceForOtherUpdates", "Sorgente degli altri aggiornamenti (Windows Update o WSUS)." },
-            { "IsWUfBConfigured", "Indica se Windows Update for Business risulta configurato." },
-            { "IsWUfBDualScanActive", "Indica se è attiva la doppia scansione WSUS + Windows Update." },
-            { "IsDeferralIsActive", "Indica se è attivo un rinvio degli aggiornamenti." },
-            { "UseUpdateClassPolicySource", "Indica se le sorgenti sono definite per classe di aggiornamento." },
-            { "PolicySources", "Origini delle policy di aggiornamento rilevate dal client (valore interno)." },
-            { "AllowTemporaryEnterpriseFeatureControl", "Abilita le funzionalità introdotte con gli aggiornamenti mensili che altrimenti restano disattivate nei PC gestiti." },
-            { "TemporaryEnterpriseFeatureControlState", "Stato del controllo delle funzionalità introdotte con gli aggiornamenti mensili." },
-            { "AllowOptionalContent", "Gestione dei contenuti opzionali e delle funzionalità in rollout graduale." },
-            { "DODownloadMode", "Modalità di Ottimizzazione recapito (condivisione peer-to-peer dei download)." },
-            { "NoAutoRebootWithLoggedOnUsers", "Se 1, nessun riavvio automatico con utenti connessi." },
+            { "AllowAutoUpdate", "Automatic update behavior: download, install and restart handling." },
+            { "AllowMUUpdateService", "Allows Windows Update to also deliver updates for other Microsoft products (e.g. Office)." },
+            { "AllowUpdateService", "Allows the device to contact the Microsoft Update service." },
+            { "ExcludeWUDriversInQualityUpdate", "Excludes drivers from Windows Update quality updates." },
+            { "ExcludeWUDrivers", "Effective exclusion of drivers from quality updates." },
+            { "ExcludeWUDriversInQualityUpdates", "Excludes drivers from Windows Update quality updates." },
+            { "DeferQualityUpdatesPeriodInDays", "Days quality updates (monthly cumulative) are deferred after release." },
+            { "DeferFeatureUpdatesPeriodInDays", "Days feature updates (new Windows version) are deferred after release." },
+            { "DeferQualityUpdates", "Whether quality update deferral is active." },
+            { "DeferFeatureUpdates", "Whether feature update deferral is active." },
+            { "QualityUpdatesDeferralInDays", "Quality update deferral actually applied by the client (days)." },
+            { "FeatureUpdatesDeferralInDays", "Feature update deferral actually applied by the client (days)." },
+            { "PauseQualityUpdates", "Temporary pause of quality updates." },
+            { "PauseFeatureUpdates", "Temporary pause of feature updates." },
+            { "PauseQualityUpdatesStartTime", "Start date of the quality update pause." },
+            { "PauseFeatureUpdatesStartTime", "Start date of the feature update pause." },
+            { "SetEDURestart", "Restart mode for education devices: restart only outside active hours and with no users signed in." },
+            { "ActiveHoursStart", "Start of active hours: during this window Windows does not restart the PC automatically." },
+            { "ActiveHoursEnd", "End of active hours." },
+            { "ActiveHoursMaxRange", "Maximum length the user can set for active hours." },
+            { "ConfigureFeatureUpdateUninstallPeriod", "Days during which a feature update can be uninstalled to go back to the previous version." },
+            { "SetDisablePauseUXAccess", "If on, hides the \"Pause updates\" option from the user." },
+            { "SetDisableUXWUAccess", "If on, prevents the user from using Windows Update features (manual scan and download)." },
+            { "BranchReadinessLevel", "Release channel the device receives feature updates from." },
+            { "ManagePreviewBuilds", "Management of preview builds (Windows Insider Program)." },
+            { "ConfigureDeadlineForFeatureUpdates", "Days after which installing a feature update and restarting become mandatory." },
+            { "ConfigureDeadlineForQualityUpdates", "Days after which installing a quality update and restarting become mandatory." },
+            { "ConfigureDeadlineGracePeriod", "Grace days after the deadline before a forced restart (quality updates)." },
+            { "ConfigureDeadlineGracePeriodForFeatureUpdates", "Grace days after the deadline before a forced restart (feature updates)." },
+            { "ConfigureDeadlineNoAutoReboot", "If on, the PC does not restart automatically before the configured deadline." },
+            { "ScheduleImminentRestartWarning", "Warning time before an imminent restart." },
+            { "ScheduleRestartWarning", "Warning time before a scheduled restart." },
+            { "UpdateNotificationLevel", "Level of Windows Update notifications shown to the user." },
+            { "AllowRebootlessUpdates", "Allows updates without restart (hotpatch), where supported." },
+            { "DriverUpdateEnrolled", "Device enrolled in the Windows Update for Business deployment service (Intune/Autopatch) for drivers." },
+            { "FeatureUpdateEnrolled", "Device enrolled in the Windows Update for Business deployment service for feature updates." },
+            { "QualityUpdateEnrolled", "Device enrolled in the Windows Update for Business deployment service for quality updates (e.g. expedited releases)." },
+            { "QuickMachineRecoveryEnrolled", "Enrollment in Quick Machine Recovery." },
+            { "TargetReleaseVersion", "Target Windows version: the PC stays on or moves to this version." },
+            { "TargetReleaseVersionInfo", "Target Windows version (e.g. 24H2)." },
+            { "ProductVersion", "Target product for feature updates (e.g. Windows 11)." },
+            { "WUServer", "WSUS server updates are downloaded from." },
+            { "UpdateServiceUrl", "WSUS server updates are downloaded from." },
+            { "WUStatusServer", "WSUS server reports are sent to." },
+            { "UseWUServer", "If 1, the PC uses the WSUS server set in WUServer." },
+            { "NoAutoUpdate", "If 1, automatic updates are turned off." },
+            { "AUOptions", "Automatic update mode set by GPO." },
+            { "ScheduledInstallDay", "Scheduled install day." },
+            { "ScheduledInstallTime", "Scheduled install time." },
+            { "DisableDualScan", "Prevents scanning against Windows Update when WSUS is configured." },
+            { "DoNotConnectToWindowsUpdateInternetLocations", "Prevents connecting to Windows Update Internet locations." },
+            { "SetPolicyDrivenUpdateSourceForFeatureUpdates", "Source for feature updates (Windows Update or WSUS)." },
+            { "SetPolicyDrivenUpdateSourceForQualityUpdates", "Source for quality updates (Windows Update or WSUS)." },
+            { "SetPolicyDrivenUpdateSourceForDriverUpdates", "Source for driver updates (Windows Update or WSUS)." },
+            { "SetPolicyDrivenUpdateSourceForOtherUpdates", "Source for other updates (Windows Update or WSUS)." },
+            { "IsWUfBConfigured", "Whether Windows Update for Business is configured." },
+            { "IsWUfBDualScanActive", "Whether dual scan (WSUS + Windows Update) is active." },
+            { "IsDeferralIsActive", "Whether an update deferral is active." },
+            { "UseUpdateClassPolicySource", "Whether sources are defined per update class." },
+            { "PolicySources", "Update policy sources detected by the client (internal value)." },
+            { "AllowTemporaryEnterpriseFeatureControl", "Enables features introduced by monthly updates that would otherwise stay off on managed PCs." },
+            { "TemporaryEnterpriseFeatureControlState", "State of the control over features introduced by monthly updates." },
+            { "AllowOptionalContent", "Handling of optional content and gradually rolled-out features." },
+            { "DODownloadMode", "Delivery Optimization mode (peer-to-peer download sharing)." },
+            { "NoAutoRebootWithLoggedOnUsers", "If 1, no automatic restart while users are signed in." },
         };
 
         static readonly Dictionary<string, Dictionary<int, string>> Maps = new Dictionary<string, Dictionary<int, string>>(StringComparer.OrdinalIgnoreCase)
         {
-            { "AllowAutoUpdate", new Dictionary<int, string> { { 0, "Notifica prima del download" }, { 1, "Installazione automatica, l'utente pianifica il riavvio" }, { 2, "Installazione e riavvio automatici" }, { 3, "Installazione e riavvio automatici all'orario pianificato" }, { 4, "Installazione e riavvio automatici senza controllo utente" }, { 5, "Aggiornamenti automatici disattivati" }, { 6, "Installazione automatica con pianificazione dell'utente" } } },
-            { "AUOptions", new Dictionary<int, string> { { 2, "Notifica download e installazione" }, { 3, "Download automatico, notifica installazione" }, { 4, "Download automatico e installazione pianificata" }, { 5, "Scelta dell'amministratore locale" }, { 7, "Download automatico, notifica installazione e riavvio" } } },
+            { "AllowAutoUpdate", new Dictionary<int, string> { { 0, "Notify before download" }, { 1, "Auto install, user schedules restart" }, { 2, "Auto install and restart" }, { 3, "Auto install and restart at scheduled time" }, { 4, "Auto install and restart without end-user control" }, { 5, "Automatic updates off" }, { 6, "Auto install with user schedule" } } },
+            { "AUOptions", new Dictionary<int, string> { { 2, "Notify for download and install" }, { 3, "Auto download, notify for install" }, { 4, "Auto download and schedule install" }, { 5, "Allow local admin to choose" }, { 7, "Auto download, notify for install and restart" } } },
             { "BranchReadinessLevel", new Dictionary<int, string> { { 2, "Windows Insider – Canary/Dev" }, { 4, "Windows Insider – Beta" }, { 8, "Windows Insider – Release Preview" }, { 16, "General Availability Channel" }, { 32, "Semi-Annual Channel (legacy)" } } },
-            { "ManagePreviewBuilds", new Dictionary<int, string> { { 0, "Build preview disabilitate" }, { 1, "Disabilitate dalla prossima release pubblica" }, { 2, "Build preview abilitate" }, { 3, "Scelta lasciata all'utente" } } },
-            { "UpdateNotificationLevel", new Dictionary<int, string> { { 0, "Notifiche predefinite" }, { 1, "Solo avvisi di riavvio" }, { 2, "Nessuna notifica, inclusi gli avvisi di riavvio" } } },
-            { "ScheduledInstallDay", new Dictionary<int, string> { { 0, "Ogni giorno" }, { 1, "Domenica" }, { 2, "Lunedì" }, { 3, "Martedì" }, { 4, "Mercoledì" }, { 5, "Giovedì" }, { 6, "Venerdì" }, { 7, "Sabato" } } },
-            { "DODownloadMode", new Dictionary<int, string> { { 0, "Solo HTTP" }, { 1, "Peer nella stessa LAN" }, { 2, "Peer nel gruppo" }, { 3, "Peer su Internet" }, { 99, "Semplice (senza peer)" }, { 100, "Bypass (BITS)" } } },
+            { "ManagePreviewBuilds", new Dictionary<int, string> { { 0, "Preview builds disabled" }, { 1, "Disabled at next public release" }, { 2, "Preview builds enabled" }, { 3, "Left to the user" } } },
+            { "UpdateNotificationLevel", new Dictionary<int, string> { { 0, "Default notifications" }, { 1, "Restart warnings only" }, { 2, "No notifications, including restart warnings" } } },
+            { "ScheduledInstallDay", new Dictionary<int, string> { { 0, "Every day" }, { 1, "Sunday" }, { 2, "Monday" }, { 3, "Tuesday" }, { 4, "Wednesday" }, { 5, "Thursday" }, { 6, "Friday" }, { 7, "Saturday" } } },
+            { "DODownloadMode", new Dictionary<int, string> { { 0, "HTTP only" }, { 1, "Peers on same LAN" }, { 2, "Peers in group" }, { 3, "Internet peers" }, { 99, "Simple (no peers)" }, { 100, "Bypass (BITS)" } } },
         };
 
         static readonly HashSet<string> Booleans = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -1565,7 +1566,7 @@ namespace PolicyViewer
             return name != null && Text.TryGetValue(name, out d) ? d : null;
         }
 
-        // Traduce un valore numerico noto in testo leggibile; null se non c'e' una traduzione
+        // Translates a known numeric value into readable text; null if there is no translation
         public static string Decode(string name, object raw)
         {
             if (raw == null || name == null) return null;
@@ -1576,26 +1577,26 @@ namespace PolicyViewer
             Dictionary<int, string> map;
             string text;
             if (Maps.TryGetValue(name, out map) && map.TryGetValue(v, out text)) return text + " (" + v + ")";
-            if (Booleans.Contains(name)) return v == 0 ? "No (0)" : v == 1 ? "Sì (1)" : v.ToString();
+            if (Booleans.Contains(name)) return v == 0 ? "No (0)" : v == 1 ? "Yes (1)" : v.ToString();
             if (name.StartsWith("SetPolicyDrivenUpdateSourceFor", StringComparison.OrdinalIgnoreCase))
-                return v == 0 ? "Windows Update (0)" : v == 1 ? "WSUS (1)" : "Non configurato";
+                return v == 0 ? "Windows Update (0)" : v == 1 ? "WSUS (1)" : "Not configured";
             if (name.EndsWith("InDays", StringComparison.OrdinalIgnoreCase) || name.StartsWith("ConfigureDeadline", StringComparison.OrdinalIgnoreCase) || name == "ConfigureFeatureUpdateUninstallPeriod")
-                return v + (v == 1 ? " giorno" : " giorni");
+                return v + (v == 1 ? " day" : " days");
             if (name == "ActiveHoursStart" || name == "ActiveHoursEnd" || name == "ScheduledInstallTime") return v.ToString("00") + ":00";
-            if (name == "ActiveHoursMaxRange") return v + " ore";
-            if (name == "ScheduleImminentRestartWarning") return v + " minuti";
-            if (name == "ScheduleRestartWarning") return v + " ore";
+            if (name == "ActiveHoursMaxRange") return v + " hours";
+            if (name == "ScheduleImminentRestartWarning") return v + " minutes";
+            if (name == "ScheduleRestartWarning") return v + " hours";
             return null;
         }
     }
 
     #endregion
 
-    #region Anonimizzazione
+    #region Anonymization
 
     static class Anonymizer
     {
-        const string Hidden = "(nascosto)";
+        const string Hidden = "(hidden)";
 
         public static void Apply(Snapshot s)
         {
@@ -1604,19 +1605,19 @@ namespace PolicyViewer
             {
                 if (!string.IsNullOrEmpty(from) && from.Length > 2 && from != "—") map.Add(new KeyValuePair<string, string>(from, to));
             };
-            add(s.UserName, @"CONTOSO\utente");
+            add(s.UserName, @"CONTOSO\user");
             if (s.UserName != null && s.UserName.Contains("\\"))
             {
                 add(s.UserName.Split('\\')[0], "CONTOSO");
-                add(s.UserName.Split('\\')[1], "utente");
+                add(s.UserName.Split('\\')[1], "user");
             }
-            add(Environment.UserName, "utente");
+            add(Environment.UserName, "user");
             add(Environment.UserDomainName, "CONTOSO");
             add(s.UserSid, "S-1-12-1-0000000000-0000000000-0000000000-0000000000");
             add(s.ComputerName, "PC-DEMO01");
             foreach (var r in s.Device)
             {
-                if (r.Label == "Numero di serie") add(r.Value, "XXXXXXXXXX");
+                if (r.Label == "Serial number") add(r.Value, "XXXXXXXXXX");
                 if (r.Label == "Tenant") add(r.Value, "Contoso");
             }
             foreach (string id in s.Providers.Keys) add(id, "00000000-0000-0000-0000-000000000000");
@@ -1626,9 +1627,9 @@ namespace PolicyViewer
             {
                 if (string.IsNullOrEmpty(t)) return t;
                 foreach (var kv in map) t = Regex.Replace(t, Regex.Escape(kv.Key), kv.Value.Replace("$", "$$"), RegexOptions.IgnoreCase);
-                t = Regex.Replace(t, @"[\w.+-]+@[\w-]+(\.[\w-]+)+", "utente@contoso.com");
+                t = Regex.Replace(t, @"[\w.+-]+@[\w-]+(\.[\w-]+)+", "user@contoso.com");
                 t = Regex.Replace(t, @"https?://[^\s;""<>]+", "https://contoso.example/...");
-                // ID tenant nelle chiavi Office (es. "<tenantId>_ADAL")
+                // Tenant ID in Office keys (e.g. "<tenantId>_ADAL")
                 t = Regex.Replace(t, @"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?=_ADAL)", "00000000-0000-0000-0000-000000000000");
                 return t;
             };
@@ -1645,21 +1646,21 @@ namespace PolicyViewer
             int fwRule = 0;
             foreach (var i in s.Items)
             {
-                // I nomi delle regole firewall rivelano applicazioni e fornitori aziendali
-                if (i.Area.StartsWith("Firewall")) i.Name = "Regola firewall " + (++fwRule);
+                // Firewall rule names reveal company applications and vendors
+                if (i.Area.StartsWith("Firewall")) i.Name = "Firewall rule " + (++fwRule);
                 i.Name = fix(i.Name); i.Value = fix(i.Value); i.Details = fix(i.Details); i.Path = fix(i.Path);
                 i.Source = fix(i.Source); i.SourceShort = fix(i.SourceShort); i.Area = fix(i.Area); i.Description = fix(i.Description);
-                // Esclusioni e regole firewall descrivono la configurazione di sicurezza aziendale
-                if (i.Area == "Microsoft Defender · esclusioni" || i.Area.StartsWith("Firewall")) { i.Value = Hidden; i.Details = Hidden; }
-                // Valori che identificano una persona (es. Office "LastLoggedInUserDisplayName")
-                if (!i.Name.StartsWith("Dont", StringComparison.OrdinalIgnoreCase) && Regex.IsMatch(i.Name ?? "","DisplayName|UserName|LoggedInUser|EmailAddress|UserEmail|Upn$|^Owner|AccountName|UserPrincipal", RegexOptions.IgnoreCase)) { i.Value = Hidden; i.Details = Hidden; }
+                // Exclusions and firewall rules describe the company security configuration
+                if (i.Area == Security.ExclusionsArea || i.Area.StartsWith("Firewall")) { i.Value = Hidden; i.Details = Hidden; }
+                // Values that identify a person (e.g. Office "LastLoggedInUserDisplayName")
+                if (!i.Name.StartsWith("Dont", StringComparison.OrdinalIgnoreCase) && Regex.IsMatch(i.Name ?? "", "DisplayName|UserName|LoggedInUser|EmailAddress|UserEmail|Upn$|^Owner|AccountName|UserPrincipal|LegalNotice|MessageText|MessageTitle", RegexOptions.IgnoreCase)) { i.Value = Hidden; i.Details = Hidden; }
             }
         }
     }
 
     #endregion
 
-    #region Report HTML
+    #region HTML report
 
     static class Report
     {
@@ -1668,8 +1669,8 @@ namespace PolicyViewer
         public static void WriteHtml(Snapshot s, string path)
         {
             var sb = new StringBuilder();
-            sb.Append("<!doctype html><html lang=\"it\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
-            sb.Append("<title>Policy " + H(s.ComputerName) + "</title><style>");
+            sb.Append("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
+            sb.Append("<title>Policies " + H(s.ComputerName) + "</title><style>");
             sb.Append(":root{--bg:#f4f6fa;--card:#fff;--line:#e5e9f0;--text:#0f172a;--muted:#64748b;--accent:#2563eb}");
             sb.Append("@media (prefers-color-scheme:dark){:root{--bg:#0f141d;--card:#171e2a;--line:#273142;--text:#e2e8f0;--muted:#94a3b8;--accent:#60a5fa}}");
             sb.Append("*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 'Segoe UI',system-ui,sans-serif}");
@@ -1681,36 +1682,36 @@ namespace PolicyViewer
             sb.Append(".GPO{background:#f3e8ff;color:#7e22ce}.REG{background:#eef1f5;color:#475569}.WU{background:#ddf5ef;color:#0f766e}.EFF{background:#fef3c7;color:#b45309}.desc{color:var(--muted);font-size:12.5px}");
             sb.Append("#q{width:100%;max-width:420px;padding:9px 12px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--text);font:inherit;margin-bottom:6px}");
             sb.Append(".warn{background:#fff8eb;border-color:#f6d58e;color:#7c4a03}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}@media(max-width:900px){.grid2{grid-template-columns:1fr}td.k{width:auto}}");
-            sb.Append("</style></head><body><header><h1>Policy applicate · " + H(s.ComputerName) + "</h1><p>Utente " + H(s.UserName) + " · raccolta del " + s.CollectedAt.ToString("dd/MM/yyyy HH:mm") + (s.IsAdmin ? "" : " · eseguito senza privilegi di amministratore") + "</p></header><main>");
-            sb.Append("<input id=\"q\" placeholder=\"Filtra le tabelle…\" oninput=\"f(this.value)\">");
+            sb.Append("</style></head><body><header><h1>Applied policies · " + H(s.ComputerName) + "</h1><p>User " + H(s.UserName) + " · collected " + s.CollectedAt.ToString(Fmt.DateTime) + (s.IsAdmin ? "" : " · run without administrator rights") + "</p></header><main>");
+            sb.Append("<input id=\"q\" placeholder=\"Filter tables…\" oninput=\"f(this.value)\">");
 
             if (s.Warnings.Count > 0)
             {
-                sb.Append("<section class=\"warn\"><h2>Avvisi</h2>");
+                sb.Append("<section class=\"warn\"><h2>Warnings</h2>");
                 foreach (var w in s.Warnings) sb.Append("<div>" + H(w) + "</div>");
                 sb.Append("</section>");
             }
 
             sb.Append("<div class=\"grid2\">");
-            InfoSection(sb, "Dispositivo", s.Device);
-            InfoSection(sb, "Gestione e sincronizzazione", s.Management);
-            sb.Append("</div><div class=\"grid2\"><section><h2>Criteri di gruppo (GPO)</h2><table>");
-            if (s.Gpos.Count == 0) sb.Append("<tr><td>Nessun oggetto Criteri di gruppo rilevato.</td></tr>");
+            InfoSection(sb, "Device", s.Device);
+            InfoSection(sb, "Management and sync", s.Management);
+            sb.Append("</div><div class=\"grid2\"><section><h2>Group Policy (GPO)</h2><table>");
+            if (s.Gpos.Count == 0) sb.Append("<tr><td>No Group Policy Objects found.</td></tr>");
             foreach (var g in s.Gpos) sb.Append("<tr><td class=\"k\">" + H(g.Scope) + "</td><td><b>" + H(g.Name) + "</b><div class=\"desc\">" + H(g.Link) + "</div></td></tr>");
             sb.Append("</table></section>");
-            InfoSection(sb, "Windows Update in breve", s.UpdateStatus);
+            InfoSection(sb, "Windows Update at a glance", s.UpdateStatus);
             sb.Append("</div><div class=\"grid2\">");
-            InfoSection(sb, "Sicurezza in breve", s.SecurityStatus);
-            InfoSection(sb, "Microsoft Defender in breve", s.DefenderStatus);
+            InfoSection(sb, "Security at a glance", s.SecurityStatus);
+            InfoSection(sb, "Microsoft Defender at a glance", s.DefenderStatus);
             sb.Append("</div>");
 
-            PolicySection(sb, "Policy utente", s.UserItems);
-            PolicySection(sb, "Policy macchina", s.MachineItems);
-            PolicySection(sb, "Policy sicurezza", s.SecurityItems);
+            PolicySection(sb, "User policies", s.UserItems);
+            PolicySection(sb, "Machine policies", s.MachineItems);
+            PolicySection(sb, "Security policies", s.SecurityItems);
             PolicySection(sb, "Microsoft Defender", s.DefenderItems);
-            PolicySection(sb, "Policy aggiornamenti", s.UpdateItems);
+            PolicySection(sb, "Update policies", s.UpdateItems);
 
-            sb.Append("<section><h2>Cronologia Windows Update</h2><table class=\"f\"><tr><th>Data</th><th>Aggiornamento</th><th>Operazione</th><th>Esito</th></tr>");
+            sb.Append("<section><h2>Windows Update history</h2><table class=\"f\"><tr><th>Date</th><th>Update</th><th>Operation</th><th>Result</th></tr>");
             foreach (var h in s.History)
                 sb.Append("<tr><td>" + H(h.DateText) + "</td><td>" + H(h.Title) + "</td><td>" + H(h.Operation) + "</td><td>" + H(h.Result) + "</td></tr>");
             sb.Append("</table></section></main>");
@@ -1732,7 +1733,7 @@ namespace PolicyViewer
             sb.Append("<section><h2>" + H(title) + " (" + list.Count + ")</h2>");
             foreach (var g in list.GroupBy(i => i.Area))
             {
-                sb.Append("<h3>" + H(g.Key) + "</h3><table class=\"f\"><tr><th style=\"width:32%\">Nome</th><th style=\"width:38%\">Valore</th><th>Origine</th></tr>");
+                sb.Append("<h3>" + H(g.Key) + "</h3><table class=\"f\"><tr><th style=\"width:32%\">Name</th><th style=\"width:38%\">Value</th><th>Source</th></tr>");
                 foreach (var i in g)
                 {
                     sb.Append("<tr><td><b>" + H(i.Name) + "</b>");
@@ -1747,7 +1748,7 @@ namespace PolicyViewer
 
     #endregion
 
-    #region Interfaccia
+    #region User interface
 
     class MainWindow : Window
     {
@@ -1767,8 +1768,8 @@ namespace PolicyViewer
             this.screenshotDir = screenshotDir;
             this.anonymize = anonymize;
             Title = "Policy Viewer";
-            // Su notebook con scaling al 125-150% l'area utile e' spesso sotto i 1360x860 DIP: una finestra piu' grande
-            // dello schermo non puo' essere centrata, quindi si adatta la dimensione all'area di lavoro
+            // On laptops with 125-150% scaling the work area is often below 1360x860 DIP: a window larger
+            // than the screen cannot be centered, so the size is fitted to the work area
             var work = SystemParameters.WorkArea;
             Width = Math.Min(1360, work.Width * 0.94);
             Height = Math.Min(860, work.Height * 0.94);
@@ -1864,18 +1865,18 @@ namespace PolicyViewer
             int userMdm = s.UserItems.Count(i => i.SourceKind == "MDM"), userGpo = s.UserItems.Count(i => i.SourceKind == "GPO"), userReg = s.UserItems.Count(i => i.SourceKind == "REG");
             int machMdm = s.MachineItems.Count(i => i.SourceKind == "MDM"), machGpo = s.MachineItems.Count(i => i.SourceKind == "GPO"), machReg = s.MachineItems.Count(i => i.SourceKind == "REG");
             F<TextBlock>("StatUser").Text = s.UserItems.Count().ToString();
-            F<TextBlock>("StatUserSub").Text = string.Format("Intune {0} · GPO {1} · Registro {2}", userMdm, userGpo, userReg);
+            F<TextBlock>("StatUserSub").Text = string.Format("Intune {0} · GPO {1} · Registry {2}", userMdm, userGpo, userReg);
             F<TextBlock>("StatMachine").Text = s.MachineItems.Count().ToString();
-            F<TextBlock>("StatMachineSub").Text = string.Format("Intune {0} · GPO {1} · Registro {2}", machMdm, machGpo, machReg);
+            F<TextBlock>("StatMachineSub").Text = string.Format("Intune {0} · GPO {1} · Registry {2}", machMdm, machGpo, machReg);
             int sec = s.SecurityItems.Count(), def = s.DefenderItems.Count();
             F<TextBlock>("StatSecurity").Text = (sec + def).ToString();
-            F<TextBlock>("StatSecuritySub").Text = string.Format("Sicurezza {0} · Defender {1}", sec, def);
+            F<TextBlock>("StatSecuritySub").Text = string.Format("Security {0} · Defender {1}", sec, def);
             F<TextBlock>("StatUpdates").Text = s.UpdateItems.Count().ToString();
-            F<TextBlock>("StatUpdatesSub").Text = string.Format("Intune {0} · WUfB DS {1} · stato effettivo {2}",
-                s.UpdateItems.Count(i => i.SourceKind == "MDM"), s.UpdateItems.Count(i => i.Source == "WUfB Deployment Service"), s.UpdateItems.Count(i => i.SourceShort == "Stato WU"));
-            var installed = s.History.Where(h => h.ResultKind == "OK" && h.Operation == "Installazione").ToList();
+            F<TextBlock>("StatUpdatesSub").Text = string.Format("Intune {0} · WUfB DS {1} · effective state {2}",
+                s.UpdateItems.Count(i => i.SourceKind == "MDM"), s.UpdateItems.Count(i => i.Source == "WUfB Deployment Service"), s.UpdateItems.Count(i => i.SourceShort == "WU state"));
+            var installed = s.History.Where(h => h.ResultKind == "OK" && h.Operation == "Install").ToList();
             F<TextBlock>("StatHistory").Text = installed.Count.ToString();
-            F<TextBlock>("StatHistorySub").Text = installed.Count > 0 ? "Ultimo: " + installed[0].Date.ToString("dd/MM/yyyy") : "Nessuna installazione registrata";
+            F<TextBlock>("StatHistorySub").Text = installed.Count > 0 ? "Latest: " + installed[0].Date.ToString(Fmt.Date) : "No installs recorded";
 
             F<ItemsControl>("DeviceList").ItemsSource = s.Device;
             F<ItemsControl>("MdmList").ItemsSource = s.Management;
@@ -1886,7 +1887,7 @@ namespace PolicyViewer
             F<ItemsControl>("WarningList").ItemsSource = s.Warnings;
             F<FrameworkElement>("WarningCard").Visibility = s.Warnings.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
             F<FrameworkElement>("BtnElevate").Visibility = s.IsAdmin ? Visibility.Collapsed : Visibility.Visible;
-            F<TextBlock>("SideFooter").Text = "Raccolta: " + s.CollectedAt.ToString("dd/MM/yyyy HH:mm") + "\nAmministratore: " + (s.IsAdmin ? "sì" : "no") + "\nUtente: " + s.UserName;
+            F<TextBlock>("SideFooter").Text = "Collected: " + s.CollectedAt.ToString(Fmt.DateTime) + "\nAdministrator: " + (s.IsAdmin ? "yes" : "no") + "\nUser: " + s.UserName;
 
             historyView = new ListCollectionView(s.History);
             historyView.Filter = o => MatchesSearch(((HistoryItem)o).SearchText);
@@ -1896,13 +1897,13 @@ namespace PolicyViewer
 
         static readonly Dictionary<string, string[]> PageText = new Dictionary<string, string[]>
         {
-            { "summary", new[] { "Riepilogo", "Panoramica delle policy applicate a questo PC e del suo stato di gestione." } },
-            { "user", new[] { "Policy utente", "Impostazioni applicate all'utente connesso da Intune, Criteri di gruppo e chiavi di registro Policies (HKCU)." } },
-            { "machine", new[] { "Policy macchina", "Impostazioni applicate al dispositivo da Intune, Criteri di gruppo e chiavi di registro Policies (HKLM). Le policy di Windows Update sono nella sezione Aggiornamenti." } },
-            { "security", new[] { "Policy sicurezza", "BitLocker, firewall, LAPS, Device Guard, opzioni di sicurezza, criteri account e diritti utente: configurati da Intune/GPO e valori effettivi." } },
-            { "defender", new[] { "Microsoft Defender", "Policy Defender distribuite da Intune/GPO, configurazione effettiva dell'antivirus, regole ASR ed esclusioni." } },
-            { "updates", new[] { "Policy aggiornamenti", "Anelli di aggiornamento, rinvii, scadenze e stato effettivo di Windows Update." } },
-            { "history", new[] { "Cronologia aggiornamenti", "Ultime installazioni registrate da Windows Update su questo PC." } },
+            { "summary", new[] { "Summary", "Overview of the policies applied to this PC and its management status." } },
+            { "user", new[] { "User policies", "Settings applied to the signed-in user by Intune, Group Policy and Policies registry keys (HKCU)." } },
+            { "machine", new[] { "Machine policies", "Settings applied to the device by Intune, Group Policy and Policies registry keys (HKLM). Windows Update policies are under Updates." } },
+            { "security", new[] { "Security policies", "BitLocker, firewall, LAPS, Device Guard, security options, account policies and user rights: configured by Intune/GPO and effective values." } },
+            { "defender", new[] { "Microsoft Defender", "Defender policies deployed by Intune/GPO, effective antivirus configuration, ASR rules and exclusions." } },
+            { "updates", new[] { "Update policies", "Update rings, deferrals, deadlines and Windows Update effective state." } },
+            { "history", new[] { "Update history", "Latest installs recorded by Windows Update on this PC." } },
         };
 
         void ShowPage(string key)
@@ -1941,7 +1942,7 @@ namespace PolicyViewer
         void UpdateChips(List<PolicyItem> items)
         {
             string[] kinds = { "", "MDM", "GPO", "REG", "WU", "EFF" };
-            string[] labels = { "Tutte", "Intune", "GPO", "Registro", "Windows Update", "Stato effettivo" };
+            string[] labels = { "All", "Intune", "GPO", "Registry", "Windows Update", "Effective state" };
             var chips = F<Panel>("Chips").Children.OfType<RadioButton>().ToList();
             for (int i = 0; i < chips.Count; i++)
             {
@@ -1969,15 +1970,15 @@ namespace PolicyViewer
         {
             var count = F<TextBlock>("CountText");
             if (data == null) { count.Text = ""; return; }
-            if (page == "history" && historyView != null) count.Text = historyView.Count + " di " + data.History.Count + " voci";
+            if (page == "history" && historyView != null) count.Text = historyView.Count + " of " + data.History.Count + " entries";
             else if (policyView != null && page != "summary")
             {
-                count.Text = policyView.Count + " di " + policyView.SourceCollection.Cast<object>().Count() + " impostazioni";
+                count.Text = policyView.Count + " of " + policyView.SourceCollection.Cast<object>().Count() + " settings";
                 F<FrameworkElement>("GridEmpty").Visibility = policyView.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
             }
         }
 
-        // Ordinamento per colonna mantenendo il raggruppamento per area
+        // Column sorting that keeps the grouping by area
         void OnPolicySorting(object sender, DataGridSortingEventArgs e)
         {
             e.Handled = true;
@@ -2006,7 +2007,7 @@ namespace PolicyViewer
         {
             var i = policyGrid.SelectedItem as PolicyItem;
             if (i == null) return;
-            string text = string.Format("Nome: {0}\r\nValore: {1}\r\nDescrizione: {2}\r\nArea: {3}\r\nOrigine: {4}\r\nPercorso: {5}\r\n\r\n{6}",
+            string text = string.Format("Name: {0}\r\nValue: {1}\r\nDescription: {2}\r\nArea: {3}\r\nSource: {4}\r\nPath: {5}\r\n\r\n{6}",
                 i.Name, i.Value, i.DescriptionText, i.Area, i.Source, i.Path, (i.Details ?? "").Replace("\n", "\r\n"));
             try { Clipboard.SetText(text); } catch { }
         }
@@ -2016,8 +2017,8 @@ namespace PolicyViewer
             if (data == null) return;
             var dlg = new Microsoft.Win32.SaveFileDialog
             {
-                Title = "Esporta report policy",
-                Filter = "Report HTML (*.html)|*.html",
+                Title = "Export policy report",
+                Filter = "HTML report (*.html)|*.html",
                 FileName = "Policy_" + data.ComputerName + "_" + data.CollectedAt.ToString("yyyyMMdd_HHmm") + ".html",
                 InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
             };
@@ -2027,7 +2028,7 @@ namespace PolicyViewer
                 Report.WriteHtml(data, dlg.FileName);
                 Process.Start(new ProcessStartInfo(dlg.FileName) { UseShellExecute = true });
             }
-            catch (Exception ex) { MessageBox.Show(this, ex.Message, "Esportazione non riuscita", MessageBoxButton.OK, MessageBoxImage.Error); }
+            catch (Exception ex) { MessageBox.Show(this, ex.Message, "Export failed", MessageBoxButton.OK, MessageBoxImage.Error); }
         }
 
         void Elevate()
@@ -2040,7 +2041,7 @@ namespace PolicyViewer
             catch (Win32Exception) { }
         }
 
-        // Solo per test: salva una PNG per pagina e chiude
+        // Test only: saves one PNG per page and closes
         void TakeScreenshots()
         {
             Directory.CreateDirectory(screenshotDir);

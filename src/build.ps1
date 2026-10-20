@@ -1,5 +1,5 @@
-# Compila PolicyViewer.exe (WPF) con il compilatore C# di .NET Framework 4.x incluso in Windows.
-# L'interfaccia (MainWindow.xaml) e l'icona sono incorporate come risorse: l'exe e' un singolo file.
+# Builds PolicyViewer.exe (WPF) with the .NET Framework 4.x C# compiler included in Windows.
+# The UI (MainWindow.xaml) and the icon are embedded as resources: the exe is a single file.
 param(
     [string]$Output = (Join-Path $PSScriptRoot '..\PolicyViewer.exe')
 )
@@ -17,7 +17,7 @@ if (-not (Test-Path $icon)) {
     $r = 18; $path.AddArc(2, 2, $r, $r, 180, 90); $path.AddArc(44, 2, $r, $r, 270, 90); $path.AddArc(44, 44, $r, $r, 0, 90); $path.AddArc(2, 44, $r, $r, 90, 90); $path.CloseFigure()
     $grad = New-Object Drawing.Drawing2D.LinearGradientBrush (New-Object Drawing.Point 0, 0), (New-Object Drawing.Point 64, 64), ([Drawing.Color]::FromArgb(59, 130, 246)), ([Drawing.Color]::FromArgb(99, 102, 241))
     $g.FillPath($grad, $path)
-    # Scudo
+    # Shield
     $shield = New-Object Drawing.Drawing2D.GraphicsPath
     $shield.AddLines([Drawing.PointF[]]@((New-Object Drawing.PointF 32, 12), (New-Object Drawing.PointF 48, 18), (New-Object Drawing.PointF 48, 31)))
     $shield.AddBezier(48, 31, 48, 42, 41, 49, 32, 53)
@@ -25,7 +25,7 @@ if (-not (Test-Path $icon)) {
     $shield.AddLines([Drawing.PointF[]]@((New-Object Drawing.PointF 16, 31), (New-Object Drawing.PointF 16, 18)))
     $shield.CloseFigure()
     $g.FillPath((New-Object Drawing.SolidBrush ([Drawing.Color]::White)), $shield)
-    # Spunta
+    # Check mark
     $pen = New-Object Drawing.Pen ([Drawing.Color]::FromArgb(59, 110, 240)), 4.5
     $pen.StartCap = 'Round'; $pen.EndCap = 'Round'; $pen.LineJoin = 'Round'
     $g.DrawLines($pen, [Drawing.Point[]]@((New-Object Drawing.Point 24, 32), (New-Object Drawing.Point 30, 38), (New-Object Drawing.Point 40, 26)))
@@ -52,5 +52,5 @@ $cscArgs = @(
 )
 
 & $csc @cscArgs
-if ($LASTEXITCODE -ne 0) { throw "Compilazione fallita ($LASTEXITCODE)" }
+if ($LASTEXITCODE -ne 0) { throw "Build failed ($LASTEXITCODE)" }
 Get-Item $Output | Select-Object FullName, Length, LastWriteTime

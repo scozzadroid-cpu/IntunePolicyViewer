@@ -1,74 +1,78 @@
 # Intune Policy Viewer
 
-Applicazione Windows (singolo `.exe`, nessuna installazione) che mostra **nome e dettagli delle policy applicate al PC**, divise per sezione:
+Windows application (single `.exe`, no installation) that shows the **name and details of the policies applied to the PC**, organized by section:
 
-| Sezione | Contenuto |
+| Section | Content |
 |---|---|
-| **Utente** | Policy Intune/MDM dell'utente connesso, GPO utente, chiavi `HKCU\Software\Policies` |
-| **Macchina** | Policy Intune/MDM del dispositivo (CSP e ADMX: Edge, OneDrive, BitLocker, Defender…), GPO computer, chiavi `HKLM\SOFTWARE\Policies` |
-| **Sicurezza** | BitLocker, firewall (incluse le regole distribuite da Intune), LAPS, Device Guard/VBS, Secure Boot, TPM, UAC, opzioni di sicurezza, criteri account, controllo e diritti utente (`secedit`, da amministratore) |
-| **Defender** | Policy Defender da Intune/GPO, configurazione effettiva dell'antivirus, regole ASR con nome, esclusioni, stato (tempo reale, manomissioni, firme, onboarding Defender for Endpoint) |
-| **Aggiornamenti** | Anelli di aggiornamento (rinvii, scadenze, orario di attività, canale), Windows Update for Business Deployment Service, stato effettivo calcolato da Windows Update, policy WSUS/GPO |
+| **User** | Intune/MDM policies of the signed-in user, user GPOs, `HKCU\Software\Policies` keys |
+| **Machine** | Intune/MDM device policies (CSP and ADMX: Edge, OneDrive, …), computer GPOs, `HKLM\SOFTWARE\Policies` keys |
+| **Security** | BitLocker, firewall (including rules deployed by Intune), LAPS, Device Guard/VBS, Secure Boot, TPM, UAC, security options, account policies, audit policy and user rights (`secedit`, as administrator) |
+| **Defender** | Defender policies from Intune/GPO, effective antivirus configuration, ASR rules by name, exclusions, status (real-time, tamper protection, signatures, Defender for Endpoint onboarding) |
+| **Updates** | Update rings (deferrals, deadlines, active hours, channel), Windows Update for Business Deployment Service, effective state computed by Windows Update, WSUS/GPO policies |
 
-In più: riepilogo del dispositivo (join Entra ID/AD, tenant, ultima sincronizzazione MDM), elenco GPO applicati/filtrati, **cronologia di Windows Update** ed **esportazione in report HTML**.
+Plus: device summary (Entra ID/AD join, tenant, last MDM sync), list of applied/filtered GPOs, **Windows Update history** and **HTML report export**.
 
-![Riepilogo](docs/screenshots/Summary.png)
+![Summary](docs/screenshots/Summary.png)
 
-Per ogni impostazione il pannello di dettaglio mostra valore decodificato, descrizione (per le policy di Windows Update), area, origine (Intune, GPO, registro, Windows Update), percorso di registro/CSP, provider vincente, intervallo consentito e chiave GPO equivalente.
+For each setting the details panel shows the decoded value, a description (for Windows Update policies), area, source (Intune, GPO, registry, Windows Update, effective state), registry/CSP path, winning provider, allowed range and equivalent GPO key.
 
-## Screenshot
+## Screenshots
 
-I dati identificativi (PC, utente, tenant, seriale, regole firewall) sono anonimizzati con `--anonymize`.
+Identifying data (PC, user, tenant, serial number, firewall rules) is anonymized with `--anonymize`.
 
-| Policy utente | Sicurezza |
+| User policies | Security |
 |---|---|
-| ![Policy utente](docs/screenshots/User.png) | ![Sicurezza](docs/screenshots/Security.png) |
-| **Microsoft Defender** | **Aggiornamenti** |
-| ![Microsoft Defender](docs/screenshots/Defender.png) | ![Aggiornamenti](docs/screenshots/Updates.png) |
-| **Cronologia Windows Update** | |
-| ![Cronologia](docs/screenshots/History.png) | |
+| ![User policies](docs/screenshots/User.png) | ![Security](docs/screenshots/Security.png) |
+| **Microsoft Defender** | **Updates** |
+| ![Microsoft Defender](docs/screenshots/Defender.png) | ![Updates](docs/screenshots/Updates.png) |
+| **Windows Update history** | |
+| ![History](docs/screenshots/History.png) | |
 
-## Uso
+## Usage
 
-Avviare `PolicyViewer.exe`.
+Run `PolicyViewer.exe`.
 
-- Funziona anche da **utente standard**. Da amministratore mostra anche i GPO del computer (`gpresult /scope computer`); il pulsante *Riavvia come amministratore* compare nel riepilogo quando serve.
-- Se avviato con credenziali diverse (es. account admin), le policy utente mostrate sono quelle dell'**utente connesso alla sessione**.
-- Ricerca: `Ctrl+F`; aggiornamento: `F5`. Filtri per origine nella barra sopra la tabella.
+- Works as a **standard user** too. As administrator it also shows computer GPOs (`gpresult /scope computer`) and local security policy; the *Restart as administrator* button appears on the summary when needed.
+- If started with different credentials (e.g. an admin account), the user policies shown are those of the **user signed in to the session**.
+- Search: `Ctrl+F`; refresh: `F5`. Source filters in the bar above the table.
 
-Riga di comando:
+Command line:
 
 ```
-PolicyViewer.exe --export C:\Temp\report.html     # report HTML senza interfaccia (exit code 0 = ok)
-PolicyViewer.exe --screenshot C:\Temp\shots       # test: salva una PNG per pagina ed esce
-PolicyViewer.exe --export C:\Temp\r.html --anonymize   # report/screenshot da condividere: nasconde PC, utente, email, seriale, tenant, ID e regole firewall
+PolicyViewer.exe --export C:\Temp\report.html            # HTML report without UI (exit code 0 = ok)
+PolicyViewer.exe --screenshot C:\Temp\shots              # test: saves one PNG per page and exits
+PolicyViewer.exe --export C:\Temp\r.html --anonymize     # report/screenshots to share: hides PC, user, email, serial, tenant, IDs and firewall rules
 ```
 
-> Nota: i **nomi dei profili Intune** (es. "Win11 - Update Ring") non sono memorizzati sul dispositivo: per le policy MDM viene mostrato il nome dell'impostazione CSP/ADMX, raggruppato per area.
+> Note: **Intune profile names** (e.g. "Win11 - Update Ring") are not stored on the device: for MDM policies the CSP/ADMX setting name is shown, grouped by area.
 
-## Fonti dati (sola lettura)
+## Data sources (read-only)
 
-- `HKLM\SOFTWARE\Microsoft\PolicyManager\current` e `...\providers` – policy MDM effettive e valori ADMX
-- `HKLM\SOFTWARE\Microsoft\Enrollments`, `...\Provisioning\OMADM\Accounts` – registrazioni MDM e ultima sincronizzazione
-- `gpresult /x` – GPO applicati e relative impostazioni
-- `HKLM`/`HKU\<SID>` `...\Policies` – valori di policy effettivi nel registro
-- `HKLM\SOFTWARE\Microsoft\WindowsUpdate\UpdatePolicy\PolicyState` – stato effettivo di Windows Update
-- API COM `Microsoft.Update.*` – cronologia, ultima ricerca/installazione, servizio predefinito
-- `dsregcmd /status`, WMI – informazioni sul dispositivo
+- `HKLM\SOFTWARE\Microsoft\PolicyManager\current` and `...\providers` – effective MDM policies and ADMX values
+- `HKLM\SOFTWARE\Microsoft\Enrollments`, `...\Provisioning\OMADM\Accounts` – MDM enrollments and last sync
+- `gpresult /x` – applied GPOs and their settings
+- `HKLM`/`HKU\<SID>` `...\Policies` – effective policy values in the registry
+- `SYSTEM\...\FirewallPolicy\Mdm` – firewall rules deployed by Intune
+- WMI `MSFT_MpPreference` / `MSFT_MpComputerStatus` – effective Defender configuration, ASR rules, status
+- `secedit /export` – local security policy (account, audit, user rights, security options)
+- WMI BitLocker, TPM, Device Guard, firewall profiles – security status
+- `HKLM\SOFTWARE\Microsoft\WindowsUpdate\UpdatePolicy\PolicyState` – Windows Update effective state
+- COM API `Microsoft.Update.*` – history, last scan/install, default service
+- `dsregcmd /status`, WMI – device information
 
-Il programma non modifica nulla e non invia dati in rete.
+The program changes nothing and sends no data over the network.
 
-## Compilazione
+## Build
 
-Richiede solo Windows con .NET Framework 4.8 (incluso in Windows 10/11): usa il compilatore C# di sistema.
+Requires only Windows with .NET Framework 4.8 (included in Windows 10/11): it uses the system C# compiler.
 
 ```powershell
-.\src\build.ps1          # produce PolicyViewer.exe nella cartella principale
+.\src\build.ps1          # produces PolicyViewer.exe in the root folder
 ```
 
-| File | Ruolo |
+| File | Role |
 |---|---|
-| `src/Program.cs` | raccolta dati, logica dell'interfaccia, export HTML |
-| `src/MainWindow.xaml` | interfaccia WPF (incorporata nell'exe come risorsa) |
-| `src/app.manifest` | `asInvoker`, DPI per monitor |
-| `src/app.ico` | icona (rigenerata da `build.ps1` se assente) |
+| `src/Program.cs` | data collection, UI logic, HTML export |
+| `src/MainWindow.xaml` | WPF interface (embedded in the exe as a resource) |
+| `src/app.manifest` | `asInvoker`, per-monitor DPI |
+| `src/app.ico` | icon (regenerated by `build.ps1` if missing) |

@@ -47,7 +47,7 @@
       </Setter>
     </Style>
 
-    <!-- Voci di navigazione nella barra laterale -->
+    <!-- Sidebar navigation items -->
     <Style x:Key="NavButton" TargetType="RadioButton">
       <Setter Property="Foreground" Value="#AEB8CC"/>
       <Setter Property="FontSize" Value="14"/>
@@ -82,7 +82,7 @@
       </Setter>
     </Style>
 
-    <!-- Filtri a "pillola" per origine -->
+    <!-- "Pill" filters by source -->
     <Style x:Key="Chip" TargetType="RadioButton">
       <Setter Property="Foreground" Value="#334155"/>
       <Setter Property="FontSize" Value="12.5"/>
@@ -162,7 +162,7 @@
               <Grid>
                 <TextBlock Text="&#xE721;" FontFamily="Segoe MDL2 Assets" Foreground="#94A3B8" Margin="12,0,0,0" VerticalAlignment="Center"/>
                 <ScrollViewer x:Name="PART_ContentHost" Margin="34,0,10,0" VerticalAlignment="Center"/>
-                <TextBlock x:Name="ph" Text="Cerca per nome, valore, area o origine…" Foreground="#9AA3B5" Margin="37,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False" Visibility="Collapsed"/>
+                <TextBlock x:Name="ph" Text="Search by name, value, area or source…" Foreground="#9AA3B5" Margin="37,0,0,0" VerticalAlignment="Center" IsHitTestVisible="False" Visibility="Collapsed"/>
               </Grid>
             </Border>
             <ControlTemplate.Triggers>
@@ -178,7 +178,7 @@
       </Setter>
     </Style>
 
-    <!-- Scrollbar sottili -->
+    <!-- Thin scrollbars -->
     <Style TargetType="ScrollBar">
       <Setter Property="Width" Value="10"/>
       <Setter Property="MinWidth" Value="10"/>
@@ -230,7 +230,7 @@
       </Style.Triggers>
     </Style>
 
-    <!-- Tabelle -->
+    <!-- Tables -->
     <Style TargetType="DataGrid">
       <Setter Property="Background" Value="White"/>
       <Setter Property="BorderThickness" Value="0"/>
@@ -320,7 +320,7 @@
       <Setter Property="Foreground" Value="#475569"/>
     </Style>
 
-    <!-- Badge origine della policy -->
+    <!-- Policy source badge -->
     <DataTemplate x:Key="SourceBadge">
       <Border x:Name="b" CornerRadius="10" Padding="9,3" HorizontalAlignment="Left" Background="#E6EEFD" MaxWidth="200">
         <TextBlock x:Name="t" Text="{Binding SourceShort}" FontSize="11.5" FontWeight="SemiBold" Foreground="#1D4ED8" TextTrimming="CharacterEllipsis"/>
@@ -392,7 +392,7 @@
     <ColumnDefinition Width="*"/>
   </Grid.ColumnDefinitions>
 
-  <!-- ===== Barra laterale ===== -->
+  <!-- ===== Sidebar ===== -->
   <Border Background="#121826">
     <DockPanel>
       <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="22,26,16,30">
@@ -416,21 +416,21 @@
       </StackPanel>
 
       <StackPanel>
-        <TextBlock Text="PANORAMICA" Foreground="#56627A" FontSize="10.5" FontWeight="SemiBold" Margin="28,0,0,6"/>
-        <RadioButton x:Name="NavSummary" Style="{StaticResource NavButton}" Tag="&#xE80F;" Content="Riepilogo" IsChecked="True"/>
-        <TextBlock Text="POLICY" Foreground="#56627A" FontSize="10.5" FontWeight="SemiBold" Margin="28,18,0,6"/>
-        <RadioButton x:Name="NavUser" Style="{StaticResource NavButton}" Tag="&#xE77B;" Content="Utente"/>
-        <RadioButton x:Name="NavMachine" Style="{StaticResource NavButton}" Tag="&#xE7F8;" Content="Macchina"/>
-        <RadioButton x:Name="NavSecurity" Style="{StaticResource NavButton}" Tag="&#xE72E;" Content="Sicurezza"/>
+        <TextBlock Text="OVERVIEW" Foreground="#56627A" FontSize="10.5" FontWeight="SemiBold" Margin="28,0,0,6"/>
+        <RadioButton x:Name="NavSummary" Style="{StaticResource NavButton}" Tag="&#xE80F;" Content="Summary" IsChecked="True"/>
+        <TextBlock Text="POLICIES" Foreground="#56627A" FontSize="10.5" FontWeight="SemiBold" Margin="28,18,0,6"/>
+        <RadioButton x:Name="NavUser" Style="{StaticResource NavButton}" Tag="&#xE77B;" Content="User"/>
+        <RadioButton x:Name="NavMachine" Style="{StaticResource NavButton}" Tag="&#xE7F8;" Content="Machine"/>
+        <RadioButton x:Name="NavSecurity" Style="{StaticResource NavButton}" Tag="&#xE72E;" Content="Security"/>
         <RadioButton x:Name="NavDefender" Style="{StaticResource NavButton}" Tag="&#xE83D;" Content="Defender"/>
-        <RadioButton x:Name="NavUpdates" Style="{StaticResource NavButton}" Tag="&#xE895;" Content="Aggiornamenti"/>
+        <RadioButton x:Name="NavUpdates" Style="{StaticResource NavButton}" Tag="&#xE895;" Content="Updates"/>
         <TextBlock Text="WINDOWS UPDATE" Foreground="#56627A" FontSize="10.5" FontWeight="SemiBold" Margin="28,18,0,6"/>
-        <RadioButton x:Name="NavHistory" Style="{StaticResource NavButton}" Tag="&#xE81C;" Content="Cronologia"/>
+        <RadioButton x:Name="NavHistory" Style="{StaticResource NavButton}" Tag="&#xE81C;" Content="History"/>
       </StackPanel>
     </DockPanel>
   </Border>
 
-  <!-- ===== Area principale ===== -->
+  <!-- ===== Main area ===== -->
   <Grid Grid.Column="1">
     <Grid.RowDefinitions>
       <RowDefinition Height="Auto"/>
@@ -440,12 +440,12 @@
 
     <Grid Margin="32,26,32,18">
       <StackPanel>
-        <TextBlock x:Name="PageTitle" Text="Riepilogo" FontSize="26" FontWeight="SemiBold" Foreground="{StaticResource TextMain}"/>
+        <TextBlock x:Name="PageTitle" Text="Summary" FontSize="26" FontWeight="SemiBold" Foreground="{StaticResource TextMain}"/>
         <TextBlock x:Name="PageSubtitle" Text="" FontSize="13" Foreground="{StaticResource TextMuted}" Margin="0,4,0,0" TextWrapping="Wrap"/>
       </StackPanel>
       <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
-        <Button x:Name="BtnRefresh" Style="{StaticResource BaseButton}" Tag="&#xE72C;" Content="Aggiorna"/>
-        <Button x:Name="BtnExport" Style="{StaticResource PrimaryButton}" Tag="&#xE74E;" Content="Esporta report"/>
+        <Button x:Name="BtnRefresh" Style="{StaticResource BaseButton}" Tag="&#xE72C;" Content="Refresh"/>
+        <Button x:Name="BtnExport" Style="{StaticResource PrimaryButton}" Tag="&#xE74E;" Content="Export report"/>
       </StackPanel>
     </Grid>
 
@@ -457,22 +457,22 @@
       </Grid.ColumnDefinitions>
       <TextBox x:Name="SearchBox" Style="{StaticResource SearchBox}"/>
       <StackPanel x:Name="Chips" Grid.Column="1" Orientation="Horizontal" Margin="16,0,0,0" VerticalAlignment="Center">
-        <RadioButton x:Name="ChipAll" Style="{StaticResource Chip}" Tag="" Content="Tutte" IsChecked="True"/>
+        <RadioButton x:Name="ChipAll" Style="{StaticResource Chip}" Tag="" Content="All" IsChecked="True"/>
         <RadioButton x:Name="ChipMdm" Style="{StaticResource Chip}" Tag="MDM" Content="Intune"/>
         <RadioButton x:Name="ChipGpo" Style="{StaticResource Chip}" Tag="GPO" Content="GPO"/>
-        <RadioButton x:Name="ChipReg" Style="{StaticResource Chip}" Tag="REG" Content="Registro"/>
+        <RadioButton x:Name="ChipReg" Style="{StaticResource Chip}" Tag="REG" Content="Registry"/>
         <RadioButton x:Name="ChipWu" Style="{StaticResource Chip}" Tag="WU" Content="Windows Update"/>
-        <RadioButton x:Name="ChipEff" Style="{StaticResource Chip}" Tag="EFF" Content="Stato effettivo"/>
+        <RadioButton x:Name="ChipEff" Style="{StaticResource Chip}" Tag="EFF" Content="Effective state"/>
       </StackPanel>
       <TextBlock x:Name="CountText" Grid.Column="2" Foreground="{StaticResource TextMuted}" VerticalAlignment="Center" FontSize="12.5"/>
     </Grid>
 
-    <!-- Pagina Riepilogo -->
+    <!-- Summary page -->
     <ScrollViewer x:Name="PageSummary" Grid.Row="2" VerticalScrollBarVisibility="Auto">
       <StackPanel Margin="32,0,32,28">
         <Border x:Name="WarningCard" Background="#FFF8EB" BorderBrush="#F6D58E" BorderThickness="1" CornerRadius="12" Padding="16,12" Margin="0,0,0,16" Visibility="Collapsed">
           <DockPanel>
-            <Button x:Name="BtnElevate" DockPanel.Dock="Right" Style="{StaticResource BaseButton}" Tag="&#xE7EF;" Content="Riavvia come amministratore" VerticalAlignment="Center" Visibility="Collapsed"/>
+            <Button x:Name="BtnElevate" DockPanel.Dock="Right" Style="{StaticResource BaseButton}" Tag="&#xE7EF;" Content="Restart as administrator" VerticalAlignment="Center" Visibility="Collapsed"/>
             <TextBlock DockPanel.Dock="Left" Text="&#xE7BA;" FontFamily="Segoe MDL2 Assets" Foreground="#B45309" FontSize="16" Margin="0,2,12,0" VerticalAlignment="Top"/>
             <ItemsControl x:Name="WarningList">
               <ItemsControl.ItemTemplate>
@@ -494,7 +494,7 @@
                 <TextBlock Text="&#xE77B;" FontFamily="Segoe MDL2 Assets" Foreground="#2563EB" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/>
               </Border>
               <TextBlock x:Name="StatUser" Text="–" FontSize="30" FontWeight="SemiBold" Foreground="#0F172A" Margin="0,12,0,0"/>
-              <TextBlock Text="Policy utente" Foreground="#334155" FontWeight="SemiBold"/>
+              <TextBlock Text="User policies" Foreground="#334155" FontWeight="SemiBold"/>
               <TextBlock x:Name="StatUserSub" Foreground="#64748B" FontSize="12" Margin="0,2,0,0" TextWrapping="Wrap"/>
             </StackPanel>
           </Border>
@@ -504,7 +504,7 @@
                 <TextBlock Text="&#xE7F8;" FontFamily="Segoe MDL2 Assets" Foreground="#6D28D9" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/>
               </Border>
               <TextBlock x:Name="StatMachine" Text="–" FontSize="30" FontWeight="SemiBold" Foreground="#0F172A" Margin="0,12,0,0"/>
-              <TextBlock Text="Policy macchina" Foreground="#334155" FontWeight="SemiBold"/>
+              <TextBlock Text="Machine policies" Foreground="#334155" FontWeight="SemiBold"/>
               <TextBlock x:Name="StatMachineSub" Foreground="#64748B" FontSize="12" Margin="0,2,0,0" TextWrapping="Wrap"/>
             </StackPanel>
           </Border>
@@ -514,7 +514,7 @@
                 <TextBlock Text="&#xE72E;" FontFamily="Segoe MDL2 Assets" Foreground="#B91C1C" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/>
               </Border>
               <TextBlock x:Name="StatSecurity" Text="–" FontSize="30" FontWeight="SemiBold" Foreground="#0F172A" Margin="0,12,0,0"/>
-              <TextBlock Text="Policy sicurezza" Foreground="#334155" FontWeight="SemiBold"/>
+              <TextBlock Text="Security policies" Foreground="#334155" FontWeight="SemiBold"/>
               <TextBlock x:Name="StatSecuritySub" Foreground="#64748B" FontSize="12" Margin="0,2,0,0" TextWrapping="Wrap"/>
             </StackPanel>
           </Border>
@@ -524,7 +524,7 @@
                 <TextBlock Text="&#xE895;" FontFamily="Segoe MDL2 Assets" Foreground="#0F766E" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/>
               </Border>
               <TextBlock x:Name="StatUpdates" Text="–" FontSize="30" FontWeight="SemiBold" Foreground="#0F172A" Margin="0,12,0,0"/>
-              <TextBlock Text="Policy aggiornamenti" Foreground="#334155" FontWeight="SemiBold"/>
+              <TextBlock Text="Update policies" Foreground="#334155" FontWeight="SemiBold"/>
               <TextBlock x:Name="StatUpdatesSub" Foreground="#64748B" FontSize="12" Margin="0,2,0,0" TextWrapping="Wrap"/>
             </StackPanel>
           </Border>
@@ -534,7 +534,7 @@
                 <TextBlock Text="&#xE81C;" FontFamily="Segoe MDL2 Assets" Foreground="#B45309" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/>
               </Border>
               <TextBlock x:Name="StatHistory" Text="–" FontSize="30" FontWeight="SemiBold" Foreground="#0F172A" Margin="0,12,0,0"/>
-              <TextBlock Text="Aggiornamenti installati" Foreground="#334155" FontWeight="SemiBold"/>
+              <TextBlock Text="Installed updates" Foreground="#334155" FontWeight="SemiBold"/>
               <TextBlock x:Name="StatHistorySub" Foreground="#64748B" FontSize="12" Margin="0,2,0,0" TextWrapping="Wrap"/>
             </StackPanel>
           </Border>
@@ -546,13 +546,13 @@
           </Grid.ColumnDefinitions>
           <Border Style="{StaticResource Card}">
             <StackPanel>
-              <TextBlock Text="Dispositivo" Style="{StaticResource CardTitle}"/>
+              <TextBlock Text="Device" Style="{StaticResource CardTitle}"/>
               <ItemsControl x:Name="DeviceList" ItemTemplate="{StaticResource InfoRowTemplate}"/>
             </StackPanel>
           </Border>
           <Border Grid.Column="2" Style="{StaticResource Card}">
             <StackPanel>
-              <TextBlock Text="Gestione e sincronizzazione" Style="{StaticResource CardTitle}"/>
+              <TextBlock Text="Management and sync" Style="{StaticResource CardTitle}"/>
               <ItemsControl x:Name="MdmList" ItemTemplate="{StaticResource InfoRowTemplate}"/>
             </StackPanel>
           </Border>
@@ -564,13 +564,13 @@
           </Grid.ColumnDefinitions>
           <Border Style="{StaticResource Card}">
             <StackPanel>
-              <TextBlock Text="Sicurezza in breve" Style="{StaticResource CardTitle}"/>
+              <TextBlock Text="Security at a glance" Style="{StaticResource CardTitle}"/>
               <ItemsControl x:Name="SecuritySummaryList" ItemTemplate="{StaticResource InfoRowTemplate}"/>
             </StackPanel>
           </Border>
           <Border Grid.Column="2" Style="{StaticResource Card}">
             <StackPanel>
-              <TextBlock Text="Windows Update in breve" Style="{StaticResource CardTitle}"/>
+              <TextBlock Text="Windows Update at a glance" Style="{StaticResource CardTitle}"/>
               <ItemsControl x:Name="UpdateSummaryList" ItemTemplate="{StaticResource InfoRowTemplate}"/>
             </StackPanel>
           </Border>
@@ -579,8 +579,8 @@
         <Grid>
           <Border Style="{StaticResource Card}">
             <StackPanel>
-              <TextBlock Text="Criteri di gruppo (GPO)" Style="{StaticResource CardTitle}"/>
-              <TextBlock x:Name="GpoEmpty" Text="Nessun oggetto Criteri di gruppo rilevato." Foreground="#64748B" Visibility="Collapsed"/>
+              <TextBlock Text="Group Policy (GPO)" Style="{StaticResource CardTitle}"/>
+              <TextBlock x:Name="GpoEmpty" Text="No Group Policy Objects found." Foreground="#64748B" Visibility="Collapsed"/>
               <ItemsControl x:Name="GpoList">
                 <ItemsControl.ItemTemplate>
                   <DataTemplate>
@@ -612,7 +612,7 @@
       </StackPanel>
     </ScrollViewer>
 
-    <!-- Pagina elenco policy (Utente / Macchina / Aggiornamenti) -->
+    <!-- Policy list page (User / Machine / Security / Defender / Updates) -->
     <Grid x:Name="PagePolicies" Grid.Row="2" Margin="32,0,32,28" Visibility="Collapsed">
       <Grid.RowDefinitions>
         <RowDefinition Height="Auto"/>
@@ -698,9 +698,9 @@
                 </GroupStyle>
               </DataGrid.GroupStyle>
               <DataGrid.Columns>
-                <DataGridTextColumn Header="NOME" Binding="{Binding Name}" Width="6*" MinWidth="200" ElementStyle="{StaticResource CellTextStrong}"/>
-                <DataGridTextColumn Header="VALORE" Binding="{Binding Value}" Width="4*" MinWidth="140" ElementStyle="{StaticResource CellTextMuted}"/>
-                <DataGridTemplateColumn Header="ORIGINE" Width="160" SortMemberPath="SourceShort">
+                <DataGridTextColumn Header="NAME" Binding="{Binding Name}" Width="6*" MinWidth="200" ElementStyle="{StaticResource CellTextStrong}"/>
+                <DataGridTextColumn Header="VALUE" Binding="{Binding Value}" Width="4*" MinWidth="140" ElementStyle="{StaticResource CellTextMuted}"/>
+                <DataGridTemplateColumn Header="SOURCE" Width="160" SortMemberPath="SourceShort">
                   <DataGridTemplateColumn.CellTemplate>
                     <DataTemplate>
                       <ContentControl Content="{Binding}" ContentTemplate="{StaticResource SourceBadge}" VerticalAlignment="Center"/>
@@ -711,7 +711,7 @@
             </DataGrid>
             <StackPanel x:Name="GridEmpty" VerticalAlignment="Center" HorizontalAlignment="Center" Visibility="Collapsed">
               <TextBlock Text="&#xE9CE;" FontFamily="Segoe MDL2 Assets" FontSize="34" Foreground="#CBD5E1" HorizontalAlignment="Center"/>
-              <TextBlock Text="Nessuna policy corrisponde ai filtri" Foreground="#64748B" Margin="0,10,0,0" HorizontalAlignment="Center"/>
+              <TextBlock Text="No policy matches the filters" Foreground="#64748B" Margin="0,10,0,0" HorizontalAlignment="Center"/>
             </StackPanel>
           </Grid>
         </Border>
@@ -720,37 +720,37 @@
           <Grid>
             <StackPanel x:Name="DetailEmpty" VerticalAlignment="Center" HorizontalAlignment="Center" Margin="24">
               <TextBlock Text="&#xE946;" FontFamily="Segoe MDL2 Assets" FontSize="34" Foreground="#CBD5E1" HorizontalAlignment="Center"/>
-              <TextBlock Text="Seleziona una policy per vederne i dettagli" Foreground="#64748B" Margin="0,10,0,0" TextWrapping="Wrap" TextAlignment="Center"/>
+              <TextBlock Text="Select a policy to see its details" Foreground="#64748B" Margin="0,10,0,0" TextWrapping="Wrap" TextAlignment="Center"/>
             </StackPanel>
             <ScrollViewer x:Name="DetailPanel" VerticalScrollBarVisibility="Auto" Visibility="Collapsed">
               <StackPanel Margin="22,20,22,22">
-                <TextBlock Text="DETTAGLIO POLICY" Style="{StaticResource SectionLabel}" Margin="0,0,0,6"/>
+                <TextBlock Text="POLICY DETAILS" Style="{StaticResource SectionLabel}" Margin="0,0,0,6"/>
                 <TextBox Style="{StaticResource ReadOnlyText}" Text="{Binding Name, Mode=OneWay}" FontSize="18" FontWeight="SemiBold"/>
                 <ContentControl Content="{Binding}" ContentTemplate="{StaticResource SourceBadge}" Margin="0,10,0,0" HorizontalAlignment="Left"/>
 
-                <TextBlock Text="VALORE" Style="{StaticResource SectionLabel}"/>
+                <TextBlock Text="VALUE" Style="{StaticResource SectionLabel}"/>
                 <Border Background="#F1F5F9" CornerRadius="8" Padding="12,9">
                   <TextBox Style="{StaticResource ReadOnlyText}" Text="{Binding Value, Mode=OneWay}" FontWeight="SemiBold"/>
                 </Border>
 
-                <TextBlock Text="DESCRIZIONE" Style="{StaticResource SectionLabel}"/>
+                <TextBlock Text="DESCRIPTION" Style="{StaticResource SectionLabel}"/>
                 <TextBox Style="{StaticResource ReadOnlyText}" Text="{Binding DescriptionText, Mode=OneWay}" Foreground="#334155"/>
 
                 <TextBlock Text="AREA" Style="{StaticResource SectionLabel}"/>
                 <TextBox Style="{StaticResource ReadOnlyText}" Text="{Binding Area, Mode=OneWay}"/>
 
-                <TextBlock Text="ORIGINE" Style="{StaticResource SectionLabel}"/>
+                <TextBlock Text="SOURCE" Style="{StaticResource SectionLabel}"/>
                 <TextBox Style="{StaticResource ReadOnlyText}" Text="{Binding Source, Mode=OneWay}"/>
 
-                <TextBlock Text="PERCORSO" Style="{StaticResource SectionLabel}"/>
+                <TextBlock Text="PATH" Style="{StaticResource SectionLabel}"/>
                 <TextBox Style="{StaticResource ReadOnlyText}" Text="{Binding Path, Mode=OneWay}" FontFamily="Consolas" FontSize="12" Foreground="#334155"/>
 
-                <TextBlock Text="DETTAGLI TECNICI" Style="{StaticResource SectionLabel}"/>
+                <TextBlock Text="TECHNICAL DETAILS" Style="{StaticResource SectionLabel}"/>
                 <Border Background="#F8FAFC" BorderBrush="#E5E9F0" BorderThickness="1" CornerRadius="8" Padding="12,10">
                   <TextBox Style="{StaticResource ReadOnlyText}" Text="{Binding Details, Mode=OneWay}" FontFamily="Consolas" FontSize="12" Foreground="#334155"/>
                 </Border>
 
-                <Button x:Name="BtnCopy" Style="{StaticResource BaseButton}" Tag="&#xE8C8;" Content="Copia dettagli" HorizontalAlignment="Left" Margin="0,18,0,0"/>
+                <Button x:Name="BtnCopy" Style="{StaticResource BaseButton}" Tag="&#xE8C8;" Content="Copy details" HorizontalAlignment="Left" Margin="0,18,0,0"/>
               </StackPanel>
             </ScrollViewer>
           </Grid>
@@ -758,14 +758,14 @@
       </Grid>
     </Grid>
 
-    <!-- Pagina cronologia Windows Update -->
+    <!-- Windows Update history page -->
     <Border x:Name="PageHistory" Grid.Row="2" Style="{StaticResource Card}" Padding="0" Margin="32,0,32,28" ClipToBounds="True" Visibility="Collapsed">
       <DataGrid x:Name="HistoryGrid" Margin="1">
         <DataGrid.Columns>
-          <DataGridTextColumn Header="DATA" Binding="{Binding DateText}" SortMemberPath="Date" Width="150" ElementStyle="{StaticResource CellTextMuted}"/>
-          <DataGridTextColumn Header="AGGIORNAMENTO" Binding="{Binding Title}" Width="*" ElementStyle="{StaticResource CellTextStrong}"/>
-          <DataGridTextColumn Header="OPERAZIONE" Binding="{Binding Operation}" Width="130" ElementStyle="{StaticResource CellTextMuted}"/>
-          <DataGridTemplateColumn Header="ESITO" Width="170" SortMemberPath="Result">
+          <DataGridTextColumn Header="DATE" Binding="{Binding DateText}" SortMemberPath="Date" Width="150" ElementStyle="{StaticResource CellTextMuted}"/>
+          <DataGridTextColumn Header="UPDATE" Binding="{Binding Title}" Width="*" ElementStyle="{StaticResource CellTextStrong}"/>
+          <DataGridTextColumn Header="OPERATION" Binding="{Binding Operation}" Width="130" ElementStyle="{StaticResource CellTextMuted}"/>
+          <DataGridTemplateColumn Header="RESULT" Width="170" SortMemberPath="Result">
             <DataGridTemplateColumn.CellTemplate>
               <DataTemplate>
                 <ContentControl Content="{Binding}" ContentTemplate="{StaticResource ResultBadge}" VerticalAlignment="Center"/>
@@ -777,13 +777,13 @@
     </Border>
   </Grid>
 
-  <!-- Caricamento -->
+  <!-- Loading -->
   <Grid x:Name="Overlay" Grid.Column="1" Background="#E6F4F6FA">
     <Border Background="White" BorderBrush="#E5E9F0" BorderThickness="1" CornerRadius="14" Padding="34,26" HorizontalAlignment="Center" VerticalAlignment="Center">
       <StackPanel Width="300">
-        <TextBlock Text="Raccolta delle policy in corso" FontSize="15" FontWeight="SemiBold" Foreground="#0F172A" HorizontalAlignment="Center"/>
+        <TextBlock Text="Collecting policies" FontSize="15" FontWeight="SemiBold" Foreground="#0F172A" HorizontalAlignment="Center"/>
         <ProgressBar IsIndeterminate="True" Height="4" Margin="0,16,0,12" Foreground="#2563EB" Background="#E2E8F0" BorderThickness="0"/>
-        <TextBlock x:Name="OverlayText" Text="Avvio…" Foreground="#64748B" FontSize="12.5" HorizontalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center"/>
+        <TextBlock x:Name="OverlayText" Text="Starting…" Foreground="#64748B" FontSize="12.5" HorizontalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center"/>
       </StackPanel>
     </Border>
   </Grid>
