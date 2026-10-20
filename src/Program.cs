@@ -2,7 +2,8 @@
 // Mostra nome e dettagli delle policy applicate al PC, divise in Utente, Macchina e Aggiornamenti.
 // Fonti: Intune/MDM (PolicyManager), Criteri di gruppo (gpresult), chiavi di registro Policies, stato e cronologia Windows Update.
 //
-// Opzioni da riga di comando: --export <file.html> (report senza interfaccia), --screenshot <cartella> (test: salva ogni pagina in PNG ed esce)
+// Opzioni da riga di comando: --export <file.html> (report senza interfaccia), --screenshot <cartella> (test: salva ogni pagina in PNG ed esce),
+// --anonymize (sostituisce nome PC, utente, email, seriale, tenant e ID: per screenshot e report da condividere)
 
 using System;
 using System.Collections.Generic;
@@ -32,8 +33,8 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("Policy Viewer")]
 [assembly: AssemblyProduct("Policy Viewer")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.0.1.0")]
+[assembly: AssemblyFileVersion("1.0.1.0")]
 [assembly: System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8", FrameworkDisplayName = ".NET Framework 4.8")]
 
 namespace PolicyViewer
@@ -44,10 +45,12 @@ namespace PolicyViewer
         static int Main(string[] args)
         {
             string export = null, screenshots = null;
+            bool anonymize = false;
             for (int i = 0; i < args.Length; i++)
             {
                 if (args[i] == "--export" && i + 1 < args.Length) export = args[++i];
                 else if (args[i] == "--screenshot" && i + 1 < args.Length) screenshots = args[++i];
+                else if (args[i] == "--anonymize") anonymize = true;
             }
 
             if (export != null)
@@ -55,6 +58,7 @@ namespace PolicyViewer
                 try
                 {
                     var data = Collector.Collect(null);
+                    if (anonymize) Anonymizer.Apply(data);
                     Report.WriteHtml(data, Path.GetFullPath(export));
                     return 0;
                 }
@@ -72,7 +76,7 @@ namespace PolicyViewer
                 MessageBox.Show(e.Exception.ToString(), "Policy Viewer - errore", MessageBoxButton.OK, MessageBoxImage.Error);
                 e.Handled = true;
             };
-            return app.Run(new MainWindow(screenshots));
+            return app.Run(new MainWindow(screenshots, anonymize));
         }
     }
 
@@ -1587,6 +1591,74 @@ namespace PolicyViewer
 
     #endregion
 
+    #region Anonimizzazione
+
+    static class Anonymizer
+    {
+        const string Hidden = "(nascosto)";
+
+        public static void Apply(Snapshot s)
+        {
+            var map = new List<KeyValuePair<string, string>>();
+            Action<string, string> add = delegate (string from, string to)
+            {
+                if (!string.IsNullOrEmpty(from) && from.Length > 2 && from != "—") map.Add(new KeyValuePair<string, string>(from, to));
+            };
+            add(s.UserName, @"CONTOSO\utente");
+            if (s.UserName != null && s.UserName.Contains("\\"))
+            {
+                add(s.UserName.Split('\\')[0], "CONTOSO");
+                add(s.UserName.Split('\\')[1], "utente");
+            }
+            add(Environment.UserName, "utente");
+            add(Environment.UserDomainName, "CONTOSO");
+            add(s.UserSid, "S-1-12-1-0000000000-0000000000-0000000000-0000000000");
+            add(s.ComputerName, "PC-DEMO01");
+            foreach (var r in s.Device)
+            {
+                if (r.Label == "Numero di serie") add(r.Value, "XXXXXXXXXX");
+                if (r.Label == "Tenant") add(r.Value, "Contoso");
+            }
+            foreach (string id in s.Providers.Keys) add(id, "00000000-0000-0000-0000-000000000000");
+            map = map.OrderByDescending(kv => kv.Key.Length).ToList();
+
+            Func<string, string> fix = delegate (string t)
+            {
+                if (string.IsNullOrEmpty(t)) return t;
+                foreach (var kv in map) t = Regex.Replace(t, Regex.Escape(kv.Key), kv.Value.Replace("$", "$$"), RegexOptions.IgnoreCase);
+                t = Regex.Replace(t, @"[\w.+-]+@[\w-]+(\.[\w-]+)+", "utente@contoso.com");
+                t = Regex.Replace(t, @"https?://[^\s;""<>]+", "https://contoso.example/...");
+                // ID tenant nelle chiavi Office (es. "<tenantId>_ADAL")
+                t = Regex.Replace(t, @"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?=_ADAL)", "00000000-0000-0000-0000-000000000000");
+                return t;
+            };
+
+            s.ComputerName = fix(s.ComputerName);
+            s.UserName = fix(s.UserName);
+            foreach (var r in s.Device.Concat(s.Management).Concat(s.UpdateStatus).Concat(s.SecurityStatus).Concat(s.DefenderStatus))
+            {
+                r.Label = fix(r.Label);
+                r.Value = fix(r.Value);
+            }
+            foreach (var g in s.Gpos) { g.Name = fix(g.Name); g.Link = fix(g.Link); }
+            for (int i = 0; i < s.Warnings.Count; i++) s.Warnings[i] = fix(s.Warnings[i]);
+            int fwRule = 0;
+            foreach (var i in s.Items)
+            {
+                // I nomi delle regole firewall rivelano applicazioni e fornitori aziendali
+                if (i.Area.StartsWith("Firewall")) i.Name = "Regola firewall " + (++fwRule);
+                i.Name = fix(i.Name); i.Value = fix(i.Value); i.Details = fix(i.Details); i.Path = fix(i.Path);
+                i.Source = fix(i.Source); i.SourceShort = fix(i.SourceShort); i.Area = fix(i.Area); i.Description = fix(i.Description);
+                // Esclusioni e regole firewall descrivono la configurazione di sicurezza aziendale
+                if (i.Area == "Microsoft Defender · esclusioni" || i.Area.StartsWith("Firewall")) { i.Value = Hidden; i.Details = Hidden; }
+                // Valori che identificano una persona (es. Office "LastLoggedInUserDisplayName")
+                if (!i.Name.StartsWith("Dont", StringComparison.OrdinalIgnoreCase) && Regex.IsMatch(i.Name ?? "","DisplayName|UserName|LoggedInUser|EmailAddress|UserEmail|Upn$|^Owner|AccountName|UserPrincipal", RegexOptions.IgnoreCase)) { i.Value = Hidden; i.Details = Hidden; }
+            }
+        }
+    }
+
+    #endregion
+
     #region Report HTML
 
     static class Report
@@ -1681,6 +1753,7 @@ namespace PolicyViewer
     {
         readonly FrameworkElement root;
         readonly string screenshotDir;
+        readonly bool anonymize;
         Snapshot data;
         string page = "summary";
         string kindFilter = "";
@@ -1689,9 +1762,10 @@ namespace PolicyViewer
         readonly DataGrid policyGrid, historyGrid;
         readonly TextBox searchBox;
 
-        public MainWindow(string screenshotDir)
+        public MainWindow(string screenshotDir, bool anonymize)
         {
             this.screenshotDir = screenshotDir;
+            this.anonymize = anonymize;
             Title = "Policy Viewer";
             // Su notebook con scaling al 125-150% l'area utile e' spesso sotto i 1360x860 DIP: una finestra piu' grande
             // dello schermo non puo' essere centrata, quindi si adatta la dimensione all'area di lavoro
@@ -1777,6 +1851,7 @@ namespace PolicyViewer
                     MessageBox.Show(this, t.Exception.GetBaseException().Message, "Policy Viewer", MessageBoxButton.OK, MessageBoxImage.Error);
                     return;
                 }
+                if (anonymize) Anonymizer.Apply(t.Result);
                 Apply(t.Result);
                 if (screenshotDir != null) Dispatcher.BeginInvoke(new Action(TakeScreenshots), DispatcherPriority.ApplicationIdle);
             }, TaskScheduler.FromCurrentSynchronizationContext());
@@ -1785,6 +1860,7 @@ namespace PolicyViewer
         void Apply(Snapshot s)
         {
             data = s;
+            F<TextBlock>("SideComputer").Text = s.ComputerName;
             int userMdm = s.UserItems.Count(i => i.SourceKind == "MDM"), userGpo = s.UserItems.Count(i => i.SourceKind == "GPO"), userReg = s.UserItems.Count(i => i.SourceKind == "REG");
             int machMdm = s.MachineItems.Count(i => i.SourceKind == "MDM"), machGpo = s.MachineItems.Count(i => i.SourceKind == "GPO"), machReg = s.MachineItems.Count(i => i.SourceKind == "REG");
             F<TextBlock>("StatUser").Text = s.UserItems.Count().ToString();

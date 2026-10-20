@@ -12,7 +12,21 @@ Applicazione Windows (singolo `.exe`, nessuna installazione) che mostra **nome e
 
 In più: riepilogo del dispositivo (join Entra ID/AD, tenant, ultima sincronizzazione MDM), elenco GPO applicati/filtrati, **cronologia di Windows Update** ed **esportazione in report HTML**.
 
+![Riepilogo](docs/screenshots/Summary.png)
+
 Per ogni impostazione il pannello di dettaglio mostra valore decodificato, descrizione (per le policy di Windows Update), area, origine (Intune, GPO, registro, Windows Update), percorso di registro/CSP, provider vincente, intervallo consentito e chiave GPO equivalente.
+
+## Screenshot
+
+I dati identificativi (PC, utente, tenant, seriale, regole firewall) sono anonimizzati con `--anonymize`.
+
+| Policy utente | Sicurezza |
+|---|---|
+| ![Policy utente](docs/screenshots/User.png) | ![Sicurezza](docs/screenshots/Security.png) |
+| **Microsoft Defender** | **Aggiornamenti** |
+| ![Microsoft Defender](docs/screenshots/Defender.png) | ![Aggiornamenti](docs/screenshots/Updates.png) |
+| **Cronologia Windows Update** | |
+| ![Cronologia](docs/screenshots/History.png) | |
 
 ## Uso
 
@@ -27,6 +41,7 @@ Riga di comando:
 ```
 PolicyViewer.exe --export C:\Temp\report.html     # report HTML senza interfaccia (exit code 0 = ok)
 PolicyViewer.exe --screenshot C:\Temp\shots       # test: salva una PNG per pagina ed esce
+PolicyViewer.exe --export C:\Temp\r.html --anonymize   # report/screenshot da condividere: nasconde PC, utente, email, seriale, tenant, ID e regole firewall
 ```
 
 > Nota: i **nomi dei profili Intune** (es. "Win11 - Update Ring") non sono memorizzati sul dispositivo: per le policy MDM viene mostrato il nome dell'impostazione CSP/ADMX, raggruppato per area.
