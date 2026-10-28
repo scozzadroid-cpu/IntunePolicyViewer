@@ -6,9 +6,10 @@ Windows application (single `.exe`, no installation) that shows the **name and d
 |---|---|
 | **User** | Intune/MDM policies of the signed-in user, user GPOs, `HKCU\Software\Policies` keys |
 | **Machine** | Intune/MDM device policies (CSP and ADMX: Edge, OneDrive, …), computer GPOs, `HKLM\SOFTWARE\Policies` keys |
-| **Security** | BitLocker, firewall (including rules deployed by Intune), LAPS, Device Guard/VBS, Secure Boot, TPM, UAC, security options, account policies, audit policy and user rights (`secedit`, as administrator) |
+| **Security** | BitLocker (with recovery password check), firewall (including rules deployed by Intune), LAPS, Device Guard/VBS, Secure Boot and 2023 certificate update status, TPM, UAC, security options, account policies, audit policy and user rights (`secedit`, as administrator) |
 | **Defender** | Defender policies from Intune/GPO, effective antivirus configuration, ASR rules by name, exclusions, status (real-time, tamper protection, signatures, Defender for Endpoint onboarding) |
 | **Updates** | Update rings (deferrals, deadlines, active hours, channel), Windows Update for Business Deployment Service, effective state computed by Windows Update, WSUS/GPO policies |
+| **Errors** | Policies that failed or were not applied, with the reason: Intune command failures (MDM diagnostics event log, last 30 days), result of the last Intune sync, Group Policy not applied (security/WMI filter, invalid GPO), Group Policy extensions and events with errors, failed Windows Update installs. Repeated errors are grouped with a count; select a row for event, CSP URI and current value |
 
 Plus: device summary (Entra ID/AD join, tenant, last MDM sync), list of applied/filtered GPOs, **Windows Update history** and **HTML report export**.
 
@@ -49,13 +50,15 @@ PolicyViewer.exe --export C:\Temp\r.html --anonymize     # report/screenshots to
 ## Data sources (read-only)
 
 - `HKLM\SOFTWARE\Microsoft\PolicyManager\current` and `...\providers` – effective MDM policies and ADMX values
-- `HKLM\SOFTWARE\Microsoft\Enrollments`, `...\Provisioning\OMADM\Accounts` – MDM enrollments and last sync
-- `gpresult /x` – applied GPOs and their settings
+- `HKLM\SOFTWARE\Microsoft\Enrollments`, `...\Provisioning\OMADM\Accounts` – MDM enrollments, last sync and last sync result
+- `Microsoft-Windows-DeviceManagement-Enterprise-Diagnostics-Provider/Admin` event log – errors and warnings of Intune/MDM commands
+- `gpresult /x` – applied GPOs, their settings, extension status and Group Policy events
 - `HKLM`/`HKU\<SID>` `...\Policies` – effective policy values in the registry
 - `SYSTEM\...\FirewallPolicy\Mdm` – firewall rules deployed by Intune
 - WMI `MSFT_MpPreference` / `MSFT_MpComputerStatus` – effective Defender configuration, ASR rules, status
 - `secedit /export` – local security policy (account, audit, user rights, security options)
 - WMI BitLocker, TPM, Device Guard, firewall profiles – security status
+- `SYSTEM\CurrentControlSet\Control\SecureBoot\Servicing` and System event 1795 – Secure Boot 2023 certificate update
 - `HKLM\SOFTWARE\Microsoft\WindowsUpdate\UpdatePolicy\PolicyState` – Windows Update effective state
 - COM API `Microsoft.Update.*` – history, last scan/install, default service
 - `dsregcmd /status`, WMI – device information

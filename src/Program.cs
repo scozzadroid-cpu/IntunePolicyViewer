@@ -1,6 +1,7 @@
 // Policy Viewer
 // Shows the name and details of the policies applied to the PC: user, machine, security, Defender and Windows Update.
 // Sources: Intune/MDM (PolicyManager), Group Policy (gpresult), Policies registry keys, Windows Update state and history.
+// Errors: MDM diagnostics event log, MDM sync result, Group Policy processing results, failed Windows Update installs.
 //
 // Command line: --export <file.html> (report without UI), --screenshot <folder> (test: saves one PNG per page and exits),
 // --anonymize (replaces PC name, user, email, serial number, tenant and IDs: for screenshots and reports to share)
@@ -9,6 +10,7 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Diagnostics.Eventing.Reader;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -33,8 +35,8 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("Policy Viewer")]
 [assembly: AssemblyProduct("Policy Viewer")]
-[assembly: AssemblyVersion("1.1.0.0")]
-[assembly: AssemblyFileVersion("1.1.0.0")]
+[assembly: AssemblyVersion("1.3.0.0")]
+[assembly: AssemblyFileVersion("1.3.0.0")]
 [assembly: System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8", FrameworkDisplayName = ".NET Framework 4.8")]
 
 namespace PolicyViewer
@@ -141,7 +143,29 @@ namespace PolicyViewer
         public string Operation { get; set; }
         public string Result { get; set; }
         public string ResultKind { get; set; }   // OK, KO, WARN, INFO
+        public int HResult { get; set; }
         public string SearchText { get { return ((Title ?? "") + "\n" + Result + "\n" + Operation).ToLowerInvariant(); } }
+    }
+
+    // A policy (or the machinery that applies policies) that failed, was not applied, or reported a problem
+    public class ErrorItem
+    {
+        public DateTime Time { get; set; }
+        public string TimeText { get { return Time == DateTime.MinValue ? "" : Time.ToString(Fmt.DateTime); } }
+        public string SourceKind { get; set; }   // MDM, GPO, WU (same values as PolicyItem, so the source badge is shared)
+        public string SourceShort { get; set; }
+        public string Result { get; set; }       // Error, Warning, Not applied, Resolved
+        public string ResultKind { get; set; }   // KO, WARN, INFO
+        public string Area { get; set; }
+        public string Name { get; set; }
+        public string Code { get; set; }
+        public string Reason { get; set; }
+        public string Details { get; set; }
+        public int Count { get; set; }
+        public DateTime FirstTime { get; set; }  // oldest occurrence, when the same error was logged repeatedly
+
+        public string CountText { get { return Count > 1 ? Count + "×" : ""; } }
+        public string SearchText { get { return string.Join("\n", new[] { Name, Area, Code, Reason, Result, SourceShort, Details }.Where(x => x != null)).ToLowerInvariant(); } }
     }
 
     public class Snapshot
@@ -159,6 +183,7 @@ namespace PolicyViewer
         public List<InfoRow> SecurityStatus = new List<InfoRow>();
         public List<InfoRow> DefenderStatus = new List<InfoRow>();
         public List<HistoryItem> History = new List<HistoryItem>();
+        public List<ErrorItem> Errors = new List<ErrorItem>();
         public List<string> Warnings = new List<string>();
         public Dictionary<string, string> Providers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
@@ -223,6 +248,9 @@ namespace PolicyViewer
             Step(s, progress, "Reading Windows Update state", delegate { CollectUpdateState(s); });
             Step(s, progress, "Reading Windows Update history", delegate { CollectUpdateHistory(s); });
             Step(s, progress, "Windows Update summary", delegate { BuildUpdateStatus(s); });
+            Step(s, progress, "Reading Intune errors (MDM event log)", delegate { CollectMdmErrors(s); });
+            Step(s, progress, "Checking Intune sync result", delegate { CollectSyncErrors(s); });
+            Step(s, progress, "Checking failed Windows Updates", delegate { CollectUpdateErrors(s); });
 
             if (progress != null) progress("Waiting for Group Policy results (gpresult)");
             Task.WaitAll(gpTasks.ToArray());
@@ -234,6 +262,7 @@ namespace PolicyViewer
                 else s.Warnings.Add("User Group Policy not available: " + gpUserErr);
             });
             foreach (var i in s.Items) i.IsDefender = Security.IsDefender(i);
+            FinalizeErrors(s);
             return s;
         }
 
@@ -377,12 +406,17 @@ namespace PolicyViewer
         {
             using (var k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Provisioning\OMADM\Accounts\" + id + @"\Protected\ConnInfo"))
             {
-                string v = k == null ? null : k.GetValue("ServerLastSuccessTime") as string;
-                DateTime d;
-                if (v != null && DateTime.TryParseExact(v, "yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out d))
-                    return d.ToLocalTime().ToString(Fmt.DateTime);
-                return null;
+                DateTime? d = ParseSyncTime(k == null ? null : k.GetValue("ServerLastSuccessTime") as string);
+                return d.HasValue ? d.Value.ToString(Fmt.DateTime) : null;
             }
+        }
+
+        static DateTime? ParseSyncTime(string v)
+        {
+            DateTime d;
+            if (v != null && DateTime.TryParseExact(v, "yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out d))
+                return d.ToLocalTime();
+            return null;
         }
 
         static string ProviderLabel(Snapshot s, string id)
@@ -654,6 +688,7 @@ namespace PolicyViewer
                 string som = link != null ? Child(link, "SOMPath") : null;
                 string reason = applied ? "Applied" : Child(g, "AccessDenied") == "true" ? "Access denied" : Child(g, "FilterAllowed") == "false" ? "Excluded by WMI/security filter" : "Not applied";
                 if (s.Gpos.Any(x => x.Name == name && x.Scope == scope)) continue;
+                AddGpoStateError(s, g, name, scope, som);
                 s.Gpos.Add(new GpoInfo { Scope = scope, Name = name, Applied = applied, Link = reason + (som != null ? "  ·  " + som : "") });
             }
 
@@ -664,6 +699,7 @@ namespace PolicyViewer
                 if (ext == null) continue;
                 foreach (XmlNode c in Children(ext, null)) AddGpItem(s, c, extName, scope, gpoNames);
             }
+            AddGpProcessingErrors(s, res, scope);
         }
 
         static readonly HashSet<string> GpSkip = new HashSet<string> { "GPO", "Precedence", "Explain", "Supported", "Category", "Identifier", "Domain" };
@@ -776,9 +812,10 @@ namespace PolicyViewer
                 string title = null;
                 try { title = e.Title; } catch { }
                 if (string.IsNullOrEmpty(title)) continue;
-                int result = 0, op = 0;
+                int result = 0, op = 0, hresult = 0;
                 DateTime date = DateTime.MinValue;
                 try { result = (int)e.ResultCode; } catch { }
+                try { hresult = (int)e.HResult; } catch { }
                 try { op = (int)e.Operation; } catch { }
                 try { date = ((DateTime)e.Date).ToLocalTime(); } catch { }
                 string res, kind;
@@ -798,6 +835,7 @@ namespace PolicyViewer
                     Operation = op == 2 ? "Uninstall" : op == 1 ? "Install" : "Other",
                     Result = res,
                     ResultKind = kind,
+                    HResult = hresult,
                 });
             }
             s.History = s.History.OrderByDescending(h => h.Date).ToList();
@@ -873,6 +911,314 @@ namespace PolicyViewer
                 object v = k == null ? null : k.GetValue(name);
                 return v == null ? null : v.ToString();
             }
+        }
+
+        #endregion
+
+        #region Errors
+
+        const string MdmLog = "Microsoft-Windows-DeviceManagement-Enterprise-Diagnostics-Provider/Admin";
+        const int ErrorLookbackDays = 30;
+        const int MaxMdmEvents = 3000;
+
+        // Codes Windows cannot describe by itself (Windows Update agent, servicing stack, WinINet, MDM)
+        static readonly Dictionary<uint, string> KnownCodes = new Dictionary<uint, string>
+        {
+            { 0x80004005, "Unspecified error." },
+            { 0x86000002, "MDM/CSP error: the node does not exist (usually a Delete or Clear of a setting that was already removed)." },
+            { 0x80072EE2, "The operation timed out (network)." },
+            { 0x80072EE7, "The server name or address could not be resolved." },
+            { 0x80072EFD, "A connection with the server could not be established." },
+            { 0x80072EFE, "The connection with the server was terminated abnormally." },
+            { 0x80072F8F, "Secure connection error (TLS) or wrong system date and time." },
+            { 0x80240FFF, "Unexpected Windows Update error." },
+            { 0x8024000B, "The operation was cancelled." },
+            { 0x80240017, "The update is not applicable to this PC." },
+            { 0x8024001E, "The operation did not complete because the service or system was shutting down." },
+            { 0x80240020, "The update needs a signed-in interactive user." },
+            { 0x80240022, "All updates failed to download or install." },
+            { 0x80240034, "The update failed to download." },
+            { 0x80240438, "No network route to the Windows Update endpoint (proxy, firewall or WSUS unreachable)." },
+            { 0x80244019, "The update server returned HTTP 404 (not found)." },
+            { 0x80244022, "The update server returned HTTP 503 (service unavailable)." },
+            { 0x8024402C, "The proxy or server name could not be resolved." },
+            { 0x80246007, "The update was not downloaded." },
+            { 0x80248007, "Windows Update data store is missing information." },
+            { 0x80242014, "The update still needs a restart to finish." },
+            { 0x80242016, "Unexpected state after the restart: the update did not complete." },
+            { 0x8024200B, "The update installer failed." },
+            { 0x800F0922, "Servicing error: not enough space on the System Reserved partition, or the update could not connect to its source." },
+            { 0x800F081F, "Servicing error: source files for the component were not found." },
+            { 0x800F0831, "Servicing error: the component store is damaged or a prerequisite update is missing." },
+            { 0x80073712, "The component store is corrupted or a servicing file is missing." },
+            { 0xC1900101, "A driver caused the upgrade to fail and Windows rolled back." },
+        };
+
+        static string Hex(int hr) { return "0x" + unchecked((uint)hr).ToString("X8"); }
+
+        // Text for an HRESULT / Win32 error code, or null when Windows has no description for it
+        public static string DescribeCode(int hr)
+        {
+            uint u = unchecked((uint)hr);
+            string text;
+            if (KnownCodes.TryGetValue(u, out text)) return text;
+            int win32 = u > 0 && u <= 0xFFFF ? (int)u : (u & 0xFFFF0000) == 0x80070000 ? (int)(u & 0xFFFF) : 0;
+            if (win32 == 0) return null;
+            string m = new Win32Exception(win32).Message;
+            return m.Contains("(0x") ? null : m;
+        }
+
+        static void CollectMdmErrors(Snapshot s)
+        {
+            var query = new EventLogQuery(MdmLog, PathType.LogName,
+                "*[System[(Level=1 or Level=2 or Level=3) and TimeCreated[timediff(@SystemTime) <= " + (ErrorLookbackDays * 86400000L) + "]]]") { ReverseDirection = true };
+            var seen = new Dictionary<string, ErrorItem>();
+            try
+            {
+                using (var reader = new EventLogReader(query))
+                {
+                    EventRecord ev;
+                    for (int n = 0; n < MaxMdmEvents && (ev = reader.ReadEvent()) != null; n++)
+                    {
+                        try { AddMdmEvent(s, ev, seen); }
+                        finally { ev.Dispose(); }
+                    }
+                }
+            }
+            catch (EventLogNotFoundException) { }
+            catch (UnauthorizedAccessException) { s.Warnings.Add("The Intune diagnostics event log is not readable with these rights: policy errors reported by Intune are not shown."); }
+        }
+
+        static void AddMdmEvent(Snapshot s, EventRecord ev, Dictionary<string, ErrorItem> seen)
+        {
+            string msg = null;
+            try { msg = ev.FormatDescription(); } catch { }
+            msg = string.IsNullOrEmpty(msg) ? "" : Regex.Replace(msg.Trim(), @"\s+", " ");
+            DateTime time = ev.TimeCreated ?? DateTime.MinValue;
+            var groups = Regex.Matches(msg, @"\(([^()]*)\)").Cast<Match>().Select(m => m.Groups[1].Value).ToList();
+
+            string uri = null, csp = null, command = null, resultText = null, enrollment = null;
+            int hr = 0;
+            bool hasCode = false, isCommand = (ev.Id == 404 || ev.Id == 454) && ev.Properties.Count >= 6;
+            if (isCommand)
+            {
+                // 404/454: command failure status. Properties: source id, enrollment, CSP, command type, URI, result
+                enrollment = ev.Properties[1].Value as string;
+                csp = ev.Properties[2].Value as string;
+                uri = ev.Properties[4].Value as string;
+                try { hr = Convert.ToInt32(ev.Properties[5].Value); hasCode = true; } catch { }
+                if (groups.Count >= 6) { command = groups[3]; resultText = groups[5]; }
+            }
+            else
+            {
+                Match um = Regex.Match(msg, @"\./[^\s),]+"), cm = Regex.Match(msg, @"0x([0-9A-Fa-f]{8})");
+                if (um.Success) uri = um.Value;
+                if (cm.Success) { hr = Convert.ToInt32(cm.Groups[1].Value, 16); hasCode = true; }
+            }
+
+            string key = ev.Id + "|" + uri + "|" + (hasCode ? hr.ToString() : msg);
+            ErrorItem existing;
+            if (seen.TryGetValue(key, out existing)) { existing.Count++; existing.FirstTime = time; return; }
+
+            string name, area;
+            Match pm = Regex.Match(uri ?? "", @"/Policy/Config/([^/]+)/([^/]+)$", RegexOptions.IgnoreCase);
+            if (pm.Success) { area = "Policy · " + PrettyArea(pm.Groups[1].Value); name = pm.Groups[2].Value; }
+            else
+            {
+                var parts = (uri ?? "").Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
+                name = parts.Length > 0 ? parts[parts.Length - 1] : "MDM event " + ev.Id;
+                if (parts.Length > 1 && !Regex.IsMatch(parts[parts.Length - 2], @"^(Policies|Config|Policy|Properties|Device|User|Vendor|MSFT|\{?[0-9a-fA-F-]{36}\}?)$"))
+                    name = parts[parts.Length - 2] + "/" + name;
+                area = csp ?? (parts.Length > 3 ? parts[3] : "Intune diagnostics");
+            }
+
+            // Text from the event (already localized by Windows) wins over the code table
+            string reason = resultText;
+            if (string.IsNullOrEmpty(reason) || reason.StartsWith("Unknown", StringComparison.OrdinalIgnoreCase))
+                reason = hasCode ? DescribeCode(hr) : null;
+            if (string.IsNullOrEmpty(reason))
+                reason = isCommand || hasCode ? "No description available for this code." : (msg.Length > 400 ? msg.Substring(0, 400) + "…" : msg);
+
+            // Removing a setting that is already gone is harmless noise, not a failed policy
+            bool cleanup = isCommand && hasCode && unchecked((uint)hr) == 0x86000002 && command != null && Regex.IsMatch(command, "Delete|Clear", RegexOptions.IgnoreCase);
+            bool warning = ev.Level == 3 || cleanup;
+
+            var d = new StringBuilder();
+            d.AppendLine("Event: " + ev.Id + " (" + (warning ? "warning" : "error") + ") in " + MdmLog);
+            if (csp != null) d.AppendLine("CSP: " + csp);
+            if (command != null) d.AppendLine("Command: " + command);
+            if (uri != null) d.AppendLine("URI: " + uri);
+            if (enrollment != null) d.AppendLine("Enrollment type: " + enrollment);
+            if (cleanup) d.AppendLine("Cleanup of a setting that is no longer assigned: it does not stop other policies from applying.");
+            if (pm.Success)
+            {
+                string area0 = pm.Groups[1].Value, name0 = pm.Groups[2].Value;
+                var applied = s.Items.FirstOrDefault(i => i.SourceKind == "MDM" && string.Equals(i.Name, name0, StringComparison.OrdinalIgnoreCase)
+                    && i.Path != null && i.Path.IndexOf("\\" + area0 + "\\", StringComparison.OrdinalIgnoreCase) >= 0);
+                d.AppendLine(applied != null ? "Value currently on this PC: " + applied.Value : "The setting is not present in the effective policies: it was not applied.");
+            }
+            if (!isCommand && msg.Length > 0) d.AppendLine("Message: " + msg);
+
+            var item = new ErrorItem
+            {
+                Time = time,
+                FirstTime = time,
+                SourceKind = "MDM",
+                SourceShort = "Intune",
+                Result = warning ? "Warning" : "Error",
+                ResultKind = warning ? "WARN" : "KO",
+                Area = area,
+                Name = name,
+                Code = hasCode ? Hex(hr) : "",
+                Reason = reason,
+                Details = d.ToString().TrimEnd(),
+                Count = 1,
+            };
+            seen[key] = item;
+            s.Errors.Add(item);
+        }
+
+        // The last MDM session (sync with Intune) ended with an error
+        static void CollectSyncErrors(Snapshot s)
+        {
+            foreach (var kv in s.Providers)
+            {
+                if (kv.Value != IntuneLabel) continue;
+                using (var k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Provisioning\OMADM\Accounts\" + kv.Key + @"\Protected\ConnInfo"))
+                {
+                    object r = k == null ? null : k.GetValue("LastSessionResult");
+                    if (!(r is int) || (int)r == 0) continue;
+                    int hr = (int)r;
+                    DateTime? failed = ParseSyncTime(k.GetValue("ServerLastFailureTime") as string);
+                    DateTime? ok = ParseSyncTime(k.GetValue("ServerLastSuccessTime") as string);
+                    var d = new StringBuilder("Enrollment ID: " + kv.Key + "\nResult of the last MDM session: " + Hex(hr));
+                    if (failed.HasValue) d.Append("\nLast failure: " + failed.Value.ToString(Fmt.DateTime));
+                    if (ok.HasValue) d.Append("\nLast success: " + ok.Value.ToString(Fmt.DateTime));
+                    s.Errors.Add(new ErrorItem
+                    {
+                        Time = failed ?? DateTime.MinValue,
+                        FirstTime = failed ?? DateTime.MinValue,
+                        SourceKind = "MDM",
+                        SourceShort = "Intune",
+                        Result = "Error",
+                        ResultKind = "KO",
+                        Area = "Intune sync",
+                        Name = "Last sync with Intune failed",
+                        Code = Hex(hr),
+                        Reason = (DescribeCode(hr) ?? "No description available for this code.") + " New or changed policies are not received until a sync succeeds.",
+                        Details = d.ToString(),
+                        Count = 1,
+                    });
+                }
+            }
+        }
+
+        // Windows Update installs that failed; shown as resolved when the same update was installed later
+        static void CollectUpdateErrors(Snapshot s)
+        {
+            foreach (var h in s.History)
+            {
+                if (h.ResultKind != "KO" && h.ResultKind != "WARN") continue;
+                var fix = s.History.FirstOrDefault(x => x.ResultKind == "OK" && x.Operation == h.Operation && x.Date > h.Date
+                    && string.Equals(x.Title, h.Title, StringComparison.OrdinalIgnoreCase));
+                string reason = h.HResult == 0 ? "Windows Update did not record an error code." : DescribeCode(h.HResult) ?? "No description available for this code.";
+                if (fix != null) reason += " Installed successfully later (" + fix.Date.ToString(Fmt.Date) + ").";
+                s.Errors.Add(new ErrorItem
+                {
+                    Time = h.Date,
+                    FirstTime = h.Date,
+                    SourceKind = "WU",
+                    SourceShort = "Windows Update",
+                    Result = fix != null ? "Resolved" : h.ResultKind == "KO" ? "Error" : "Warning",
+                    ResultKind = fix != null ? "INFO" : h.ResultKind,
+                    Area = "Windows Update · " + h.Operation.ToLowerInvariant(),
+                    Name = h.Title,
+                    Code = h.HResult == 0 ? "" : Hex(h.HResult),
+                    Reason = reason,
+                    Details = "Update: " + h.Title + "\nOperation: " + h.Operation + "\nResult: " + h.Result + "\nDate: " + h.DateText,
+                    Count = 1,
+                });
+            }
+        }
+
+        static void AddGpoError(Snapshot s, string scope, string result, string kind, string area, string name, string code, string reason, string details, DateTime time)
+        {
+            s.Errors.Add(new ErrorItem
+            {
+                Time = time, FirstTime = time, SourceKind = "GPO", SourceShort = "GPO", Result = result, ResultKind = kind,
+                Area = area + " · " + scope, Name = name, Code = code, Reason = reason, Details = details, Count = 1,
+            });
+        }
+
+        // GPOs that are in the list of applied objects but were not applied, with the reason
+        static void AddGpoStateError(Snapshot s, XmlNode g, string name, string scope, string som)
+        {
+            string reason, result, kind;
+            if (Child(g, "IsValid") == "false") { reason = "The GPO is not valid: it is corrupt or unreadable in SYSVOL."; result = "Error"; kind = "KO"; }
+            else if (Child(g, "AccessDenied") == "true") { reason = "Denied by security filtering: the " + (scope == "User" ? "user" : "computer") + " has no Read and Apply group policy permission on this GPO."; result = "Not applied"; kind = "WARN"; }
+            else if (Child(g, "FilterAllowed") == "false") { reason = "Excluded by the WMI filter of the GPO: the query is false on this PC."; result = "Not applied"; kind = "INFO"; }
+            else return;
+            AddGpoError(s, scope, result, kind, "Group Policy", name, "", reason, "Group Policy Object: " + name + (som != null ? "\nLinked to: " + som : ""), s.CollectedAt);
+        }
+
+        // Extensions (Registry, Security, Scripts, …) that ended with an error, and Group Policy events of level critical, error or warning
+        static void AddGpProcessingErrors(Snapshot s, XmlNode res, string scope)
+        {
+            foreach (XmlNode es in Children(res, "ExtensionStatus"))
+            {
+                string ext = Child(es, "Name"), err = Child(es, "Error"), logging = Child(es, "LoggingStatus");
+                DateTime end;
+                if (!DateTime.TryParse(Child(es, "EndTime"), CultureInfo.InvariantCulture, DateTimeStyles.None, out end)) end = s.CollectedAt;
+                int code;
+                bool failed = err != null && err != "0" && int.TryParse(err, NumberStyles.Integer, CultureInfo.InvariantCulture, out code);
+                if (failed)
+                {
+                    code = int.Parse(err, CultureInfo.InvariantCulture);
+                    AddGpoError(s, scope, "Error", "KO", "Group Policy extension", ext, Hex(code), (DescribeCode(code) ?? "No description available for this code.") + " The settings handled by this extension may not be applied.",
+                        "Extension: " + ext + "\nError: " + Hex(code) + "\nProcessing started: " + Child(es, "BeginTime") + "\nProcessing ended: " + Child(es, "EndTime"), end);
+                }
+                else if (!string.IsNullOrEmpty(logging) && logging != "Complete")
+                    AddGpoError(s, scope, "Warning", "WARN", "Group Policy extension", ext, "", "Processing did not complete (status: " + logging + ").", "Extension: " + ext + "\nLogging status: " + logging, end);
+            }
+
+            foreach (XmlNode er in res.SelectNodes(".//*[local-name()='EventRecord']"))
+            {
+                int level = 0, id = 0;
+                string provider = null, when = null;
+                try
+                {
+                    var x = new XmlDocument();
+                    x.LoadXml(Child(er, "EventXml"));
+                    int.TryParse(x.SelectSingleNode("//*[local-name()='Level']").InnerText, out level);
+                    int.TryParse(x.SelectSingleNode("//*[local-name()='EventID']").InnerText, out id);
+                    var pn = x.SelectSingleNode("//*[local-name()='Provider']/@Name");
+                    var tc = x.SelectSingleNode("//*[local-name()='TimeCreated']/@SystemTime");
+                    provider = pn == null ? null : pn.Value;
+                    when = tc == null ? null : tc.Value;
+                }
+                catch { continue; }
+                if (level < 1 || level > 3) continue;
+
+                string desc = Child(er, "EventDescription");
+                desc = string.IsNullOrEmpty(desc) ? "No description available." : Regex.Replace(desc, @"\s+", " ");
+                if (desc.Length > 600) desc = desc.Substring(0, 600) + "…";
+                DateTime t;
+                if (!DateTime.TryParse(when, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out t)) t = s.CollectedAt;
+                else t = t.ToLocalTime();
+                string name = "Group Policy event " + id;
+                if (s.Errors.Any(e => e.SourceKind == "GPO" && e.Name == name && e.Reason == desc && e.Area.EndsWith(scope))) continue;
+                AddGpoError(s, scope, level == 3 ? "Warning" : "Error", level == 3 ? "WARN" : "KO", "Group Policy event", name, "", desc,
+                    "Provider: " + provider + "\nEvent ID: " + id + "\nTime: " + t.ToString(Fmt.DateTime), t);
+            }
+        }
+
+        // Most severe first, then newest; repeated errors get their time span
+        static void FinalizeErrors(Snapshot s)
+        {
+            foreach (var e in s.Errors)
+                if (e.Count > 1) e.Details += "\nOccurrences: " + e.Count + " (from " + e.FirstTime.ToString(Fmt.DateTime) + " to " + e.Time.ToString(Fmt.DateTime) + ")";
+            Func<ErrorItem, int> rank = e => e.ResultKind == "KO" ? 0 : e.ResultKind == "WARN" ? 1 : 2;
+            s.Errors = s.Errors.OrderBy(rank).ThenByDescending(e => e.Time).ToList();
         }
 
         #endregion
@@ -1045,7 +1391,7 @@ namespace PolicyViewer
                     var parts = new List<string>();
                     if (f.TryGetValue("Action", out v)) parts.Add(v);
                     if (f.TryGetValue("Dir", out v)) parts.Add(v == "In" ? "Inbound" : v == "Out" ? "Outbound" : v);
-                    if (f.TryGetValue("Protocol", out v)) parts.Add(v == "6" ? "TCP" : v == "17" ? "UDP" : v == "1" ? "ICMP" : "protocol " + v);
+                    if (f.TryGetValue("Protocol", out v)) parts.Add(v == "6" ? "TCP" : v == "17" ? "UDP" : v == "1" ? "ICMP" : v == "58" ? "ICMPv6" : "protocol " + v);
                     if (f.TryGetValue("LPort", out v)) parts.Add("local port " + v);
                     if (f.TryGetValue("RPort", out v)) parts.Add("remote port " + v);
                     if (f.TryGetValue("App", out v)) parts.Add(System.IO.Path.GetFileName(v));
@@ -1365,16 +1711,29 @@ namespace PolicyViewer
             var av = Wmi(@"root\SecurityCenter2", "SELECT displayName FROM AntiVirusProduct").Select(o => P(o, "displayName") as string).Where(n => n != null).Distinct().ToList();
             if (av.Count > 0) ds.Add(new InfoRow("Registered antivirus", string.Join(", ", av)));
 
-            var vols = Wmi(@"root\cimv2\Security\MicrosoftVolumeEncryption", "SELECT DriveLetter,ProtectionStatus,EncryptionMethod,ConversionStatus FROM Win32_EncryptableVolume")
+            var vols = Wmi(@"root\cimv2\Security\MicrosoftVolumeEncryption", "SELECT DeviceID,DriveLetter,ProtectionStatus,EncryptionMethod,ConversionStatus FROM Win32_EncryptableVolume")
                 .Where(v => P(v, "DriveLetter") != null).ToList();
             if (vols.Count > 0)
             {
                 foreach (var v in vols)
                 {
                     int prot = Convert.ToInt32(P(v, "ProtectionStatus") ?? 0), method = Convert.ToInt32(P(v, "EncryptionMethod") ?? 0), conv = Convert.ToInt32(P(v, "ConversionStatus") ?? 0);
-                    string m = method == 3 ? "AES 128" : method == 4 ? "AES 256" : method == 6 ? "XTS-AES 128" : method == 7 ? "XTS-AES 256" : method == 0 ? "not encrypted" : "method " + method;
-                    string c = conv == 1 ? "fully encrypted" : conv == 0 ? "fully decrypted" : conv == 2 ? "encryption in progress" : conv == 3 ? "decryption in progress" : "status " + conv;
-                    st.Add(new InfoRow("BitLocker " + P(v, "DriveLetter"), (prot == 1 ? "Protection on" : "Protection off") + " · " + m + " · " + c));
+                    string m = method < BitLockerMethods.Length ? BitLockerMethods[method] : "method " + method;
+                    string c = conv < BitLockerConversion.Length ? BitLockerConversion[conv] : "status " + conv;
+                    string row = (prot == 1 ? "Protection on" : prot == 2 ? "Protection unknown (volume locked)" : "Protection off") + " · " + m + " · " + c;
+                    // Recovery password (the key escrowed to Entra ID/AD): same check as intune-secureboot-cert-inventory
+                    if (method != 0)
+                    {
+                        try
+                        {
+                            var inParams = ((ManagementObject)v).GetMethodParameters("GetKeyProtectors");
+                            inParams["KeyProtectorType"] = 3;
+                            var ids = ((ManagementObject)v).InvokeMethod("GetKeyProtectors", inParams, null)["VolumeKeyProtectorID"] as string[];
+                            row += " · recovery password " + (ids != null && ids.Length > 0 ? "present" : "missing");
+                        }
+                        catch { }
+                    }
+                    st.Add(new InfoRow("BitLocker " + P(v, "DriveLetter"), row));
                 }
             }
             else st.Add(new InfoRow("BitLocker " + Environment.GetEnvironmentVariable("SystemDrive"), BitLockerFromShell()));
@@ -1395,6 +1754,7 @@ namespace PolicyViewer
             {
                 object v = k == null ? null : k.GetValue("UEFISecureBootEnabled");
                 st.Add(new InfoRow("Secure Boot", v == null ? "Not supported / legacy BIOS" : Convert.ToInt32(v) == 1 ? "On" : "Off"));
+                if (v != null) st.Add(new InfoRow("Secure Boot certificates (2023 CA)", SecureBootCertStatus()));
             }
 
             var tpm = Wmi(@"root\cimv2\Security\MicrosoftTpm", "SELECT * FROM Win32_Tpm").FirstOrDefault();
@@ -1414,6 +1774,10 @@ namespace PolicyViewer
                 if (running.Contains(1)) services.Add("Credential Guard");
                 if (running.Contains(2)) services.Add("Memory integrity (HVCI)");
                 if (running.Contains(3)) services.Add("System Guard Secure Launch");
+                if (running.Contains(4)) services.Add("SMM Firmware Measurement");
+                if (running.Contains(5)) services.Add("Kernel-mode hardware-enforced stack protection");
+                if (running.Contains(6)) services.Add("Kernel-mode hardware-enforced stack protection (audit)");
+                if (running.Contains(7)) services.Add("Hypervisor-Enforced Paging Translation");
                 st.Add(new InfoRow("Virtualization-based security", (vbs == 2 ? "Running" : vbs == 1 ? "Enabled, not running" : "Off")
                     + (services.Count > 0 ? " · " + string.Join(", ", services) : "")));
             }
@@ -1438,6 +1802,53 @@ namespace PolicyViewer
                 else if (k3 != null && k3.ValueCount > 0) laps = "Configured (legacy LAPS)";
             }
             st.Add(new InfoRow("LAPS", laps));
+        }
+
+        // Win32_EncryptableVolume EncryptionMethod and ConversionStatus
+        static readonly string[] BitLockerMethods = { "not encrypted", "AES 128 with diffuser", "AES 256 with diffuser", "AES 128", "AES 256", "hardware encryption", "XTS-AES 128", "XTS-AES 256" };
+        static readonly string[] BitLockerConversion = { "fully decrypted", "fully encrypted", "encryption in progress", "decryption in progress", "encryption paused", "decryption paused" };
+
+        // Replacement of the 2011 Secure Boot certificates, which expire from June 2026.
+        // Same sources as intune-secureboot-cert-inventory: Servicing status, AvailableUpdates bitmask, event 1795.
+        static string SecureBootCertStatus()
+        {
+            var parts = new List<string>();
+            string status;
+            using (var k = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\SecureBoot\Servicing"))
+            {
+                status = k == null ? null : k.GetValue("UEFICA2023Status") as string;
+                object capable = k == null ? null : k.GetValue("WindowsUEFICA2023Capable");
+                object error = k == null ? null : k.GetValue("UEFICA2023Error");
+                if (status == "Updated") parts.Add("Updated");
+                else if (status == "InProgress") parts.Add("Update in progress");
+                else if (status == "NotStarted") parts.Add("Not started");
+                else if (capable != null)
+                {
+                    int c = Convert.ToInt32(capable);
+                    parts.Add(c == 2 ? "2023 CA in DB, booting from the 2023 boot manager" : c == 1 ? "2023 CA in DB" : "2023 CA not in DB");
+                }
+                else parts.Add("Status not reported");
+                if (error != null && Convert.ToInt32(error) != 0)
+                    parts.Add(string.Format("error 0x{0:X} (event {1})", Convert.ToInt32(error), k.GetValue("UEFICA2023ErrorEvent") ?? "?"));
+            }
+            using (var k = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\SecureBoot"))
+            {
+                object av = k == null ? null : k.GetValue("AvailableUpdates");
+                // Once updated the bitmask stays at 0x4000: show it only while the update is not complete
+                if (status != "Updated" && av != null && Convert.ToInt32(av) != 0) parts.Add(string.Format("pending steps 0x{0:X4}", Convert.ToInt32(av)));
+            }
+            // Event 1795: the firmware rejected the write of a Secure Boot variable (often a missing OEM KEK)
+            try
+            {
+                var q = new System.Diagnostics.Eventing.Reader.EventLogQuery("System", System.Diagnostics.Eventing.Reader.PathType.LogName,
+                    "*[System[EventID=1795 and TimeCreated[timediff(@SystemTime) <= 2592000000]]]");
+                int n = 0;
+                using (var r = new System.Diagnostics.Eventing.Reader.EventLogReader(q))
+                    for (var e = r.ReadEvent(); e != null; e = r.ReadEvent()) { e.Dispose(); n++; }
+                if (n > 0) parts.Add("firmware write errors (event 1795): " + n + " in 30 days");
+            }
+            catch { }
+            return string.Join(" · ", parts);
         }
 
         // BitLocker status readable by standard users too (shell property)
@@ -1541,9 +1952,9 @@ namespace PolicyViewer
 
         static readonly Dictionary<string, Dictionary<int, string>> Maps = new Dictionary<string, Dictionary<int, string>>(StringComparer.OrdinalIgnoreCase)
         {
-            { "AllowAutoUpdate", new Dictionary<int, string> { { 0, "Notify before download" }, { 1, "Auto install, user schedules restart" }, { 2, "Auto install and restart" }, { 3, "Auto install and restart at scheduled time" }, { 4, "Auto install and restart without end-user control" }, { 5, "Automatic updates off" }, { 6, "Auto install with user schedule" } } },
+            { "AllowAutoUpdate", new Dictionary<int, string> { { 0, "Notify before download" }, { 1, "Auto install, user schedules restart" }, { 2, "Auto install and restart" }, { 3, "Auto install and restart at scheduled time" }, { 4, "Auto install and restart without end-user control" }, { 5, "Automatic updates off" } } },
             { "AUOptions", new Dictionary<int, string> { { 2, "Notify for download and install" }, { 3, "Auto download, notify for install" }, { 4, "Auto download and schedule install" }, { 5, "Allow local admin to choose" }, { 7, "Auto download, notify for install and restart" } } },
-            { "BranchReadinessLevel", new Dictionary<int, string> { { 2, "Windows Insider – Canary/Dev" }, { 4, "Windows Insider – Beta" }, { 8, "Windows Insider – Release Preview" }, { 16, "General Availability Channel" }, { 32, "Semi-Annual Channel (legacy)" } } },
+            { "BranchReadinessLevel", new Dictionary<int, string> { { 2, "Windows Insider – Dev" }, { 4, "Windows Insider – Beta" }, { 8, "Windows Insider – Release Preview" }, { 16, "General Availability Channel" }, { 32, "Semi-Annual Channel (legacy)" }, { 64, "Release Preview – quality updates only" }, { 128, "Windows Insider – Canary" } } },
             { "ManagePreviewBuilds", new Dictionary<int, string> { { 0, "Preview builds disabled" }, { 1, "Disabled at next public release" }, { 2, "Preview builds enabled" }, { 3, "Left to the user" } } },
             { "UpdateNotificationLevel", new Dictionary<int, string> { { 0, "Default notifications" }, { 1, "Restart warnings only" }, { 2, "No notifications, including restart warnings" } } },
             { "ScheduledInstallDay", new Dictionary<int, string> { { 0, "Every day" }, { 1, "Sunday" }, { 2, "Monday" }, { 3, "Tuesday" }, { 4, "Wednesday" }, { 5, "Thursday" }, { 6, "Friday" }, { 7, "Saturday" } } },
@@ -1643,6 +2054,9 @@ namespace PolicyViewer
             }
             foreach (var g in s.Gpos) { g.Name = fix(g.Name); g.Link = fix(g.Link); }
             for (int i = 0; i < s.Warnings.Count; i++) s.Warnings[i] = fix(s.Warnings[i]);
+            // CSP URIs carry the tenant ID as a path segment
+            Func<string, string> fixUri = t => t == null ? null : Regex.Replace(fix(t), @"(?<=/)[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}(?=/|$)", "00000000-0000-0000-0000-000000000000");
+            foreach (var e in s.Errors) { e.Name = fixUri(e.Name); e.Area = fixUri(e.Area); e.Reason = fixUri(e.Reason); e.Details = fixUri(e.Details); }
             int fwRule = 0;
             foreach (var i in s.Items)
             {
@@ -1711,6 +2125,18 @@ namespace PolicyViewer
             PolicySection(sb, "Microsoft Defender", s.DefenderItems);
             PolicySection(sb, "Update policies", s.UpdateItems);
 
+            sb.Append("<section><h2>Policy errors (" + s.Errors.Count + ")</h2>");
+            if (s.Errors.Count == 0) sb.Append("<div>No policy errors found.</div>");
+            else
+            {
+                sb.Append("<table class=\"f\"><tr><th>Last seen</th><th>Source</th><th style=\"width:24%\">Policy / item</th><th style=\"width:40%\">Why</th><th>Code</th><th>Times</th><th>Result</th></tr>");
+                foreach (var e in s.Errors)
+                    sb.Append("<tr><td>" + H(e.TimeText) + "</td><td><span class=\"b " + e.SourceKind + "\">" + H(e.SourceShort) + "</span></td><td><b>" + H(e.Name) + "</b><div class=\"desc\">" + H(e.Area)
+                        + "</div></td><td>" + H(e.Reason) + "<div class=\"desc\">" + H(e.Details).Replace("\n", "<br>") + "</div></td><td>" + H(e.Code) + "</td><td>" + H(e.CountText) + "</td><td>" + H(e.Result) + "</td></tr>");
+                sb.Append("</table>");
+            }
+            sb.Append("</section>");
+
             sb.Append("<section><h2>Windows Update history</h2><table class=\"f\"><tr><th>Date</th><th>Update</th><th>Operation</th><th>Result</th></tr>");
             foreach (var h in s.History)
                 sb.Append("<tr><td>" + H(h.DateText) + "</td><td>" + H(h.Title) + "</td><td>" + H(h.Operation) + "</td><td>" + H(h.Result) + "</td></tr>");
@@ -1758,9 +2184,9 @@ namespace PolicyViewer
         Snapshot data;
         string page = "summary";
         string kindFilter = "";
-        ListCollectionView policyView, historyView;
+        ListCollectionView policyView, historyView, errorView;
 
-        readonly DataGrid policyGrid, historyGrid;
+        readonly DataGrid policyGrid, historyGrid, errorGrid;
         readonly TextBox searchBox;
 
         public MainWindow(string screenshotDir, bool anonymize)
@@ -1787,6 +2213,7 @@ namespace PolicyViewer
 
             policyGrid = F<DataGrid>("PolicyGrid");
             historyGrid = F<DataGrid>("HistoryGrid");
+            errorGrid = F<DataGrid>("ErrorGrid");
             searchBox = F<TextBox>("SearchBox");
 
             NavHook("NavSummary", "summary");
@@ -1795,7 +2222,9 @@ namespace PolicyViewer
             NavHook("NavSecurity", "security");
             NavHook("NavDefender", "defender");
             NavHook("NavUpdates", "updates");
+            NavHook("NavErrors", "errors");
             NavHook("NavHistory", "history");
+            CardHook("CardErrors", "NavErrors");
             CardHook("CardUser", "NavUser");
             CardHook("CardMachine", "NavMachine");
             CardHook("CardSecurity", "NavSecurity");
@@ -1874,6 +2303,9 @@ namespace PolicyViewer
             F<TextBlock>("StatUpdates").Text = s.UpdateItems.Count().ToString();
             F<TextBlock>("StatUpdatesSub").Text = string.Format("Intune {0} · WUfB DS {1} · effective state {2}",
                 s.UpdateItems.Count(i => i.SourceKind == "MDM"), s.UpdateItems.Count(i => i.Source == "WUfB Deployment Service"), s.UpdateItems.Count(i => i.SourceShort == "WU state"));
+            int errKo = s.Errors.Count(e => e.ResultKind == "KO"), errWarn = s.Errors.Count(e => e.ResultKind == "WARN"), errInfo = s.Errors.Count(e => e.ResultKind == "INFO");
+            F<TextBlock>("StatErrors").Text = errKo.ToString();
+            F<TextBlock>("StatErrorsSub").Text = string.Format("{0} warnings · {1} info", errWarn, errInfo);
             var installed = s.History.Where(h => h.ResultKind == "OK" && h.Operation == "Install").ToList();
             F<TextBlock>("StatHistory").Text = installed.Count.ToString();
             F<TextBlock>("StatHistorySub").Text = installed.Count > 0 ? "Latest: " + installed[0].Date.ToString(Fmt.Date) : "No installs recorded";
@@ -1892,6 +2324,9 @@ namespace PolicyViewer
             historyView = new ListCollectionView(s.History);
             historyView.Filter = o => MatchesSearch(((HistoryItem)o).SearchText);
             historyGrid.ItemsSource = historyView;
+            errorView = new ListCollectionView(s.Errors);
+            errorView.Filter = o => (kindFilter.Length == 0 || ((ErrorItem)o).SourceKind == kindFilter) && MatchesSearch(((ErrorItem)o).SearchText);
+            errorGrid.ItemsSource = errorView;
             ShowPage(page);
         }
 
@@ -1903,6 +2338,7 @@ namespace PolicyViewer
             { "security", new[] { "Security policies", "BitLocker, firewall, LAPS, Device Guard, security options, account policies and user rights: configured by Intune/GPO and effective values." } },
             { "defender", new[] { "Microsoft Defender", "Defender policies deployed by Intune/GPO, effective antivirus configuration, ASR rules and exclusions." } },
             { "updates", new[] { "Update policies", "Update rings, deferrals, deadlines and Windows Update effective state." } },
+            { "errors", new[] { "Policy errors", "Policies that failed or were not applied, and why: Intune command failures (last 30 days), last sync result, Group Policy processing and failed Windows Update installs. Select a row for details." } },
             { "history", new[] { "Update history", "Latest installs recorded by Windows Update on this PC." } },
         };
 
@@ -1915,20 +2351,22 @@ namespace PolicyViewer
             F<FrameworkElement>("PageSummary").Visibility = key == "summary" ? Visibility.Visible : Visibility.Collapsed;
             F<FrameworkElement>("PagePolicies").Visibility = policies ? Visibility.Visible : Visibility.Collapsed;
             F<FrameworkElement>("PageHistory").Visibility = key == "history" ? Visibility.Visible : Visibility.Collapsed;
+            F<FrameworkElement>("PageErrors").Visibility = key == "errors" ? Visibility.Visible : Visibility.Collapsed;
             F<FrameworkElement>("Toolbar").Visibility = key == "summary" ? Visibility.Collapsed : Visibility.Visible;
-            F<FrameworkElement>("Chips").Visibility = policies ? Visibility.Visible : Visibility.Collapsed;
+            F<FrameworkElement>("Chips").Visibility = policies || key == "errors" ? Visibility.Visible : Visibility.Collapsed;
             var cards = F<ItemsControl>("StatusCards");
             cards.Visibility = key == "updates" || key == "security" || key == "defender" ? Visibility.Visible : Visibility.Collapsed;
             if (data == null) return;
             cards.ItemsSource = key == "updates" ? data.UpdateStatus : key == "security" ? data.SecurityStatus : key == "defender" ? data.DefenderStatus : null;
 
+            if (key == "errors") UpdateChips(data.Errors.Select(e => e.SourceKind).ToList());
             if (policies)
             {
                 var source = key == "user" ? data.UserItems : key == "machine" ? data.MachineItems : key == "security" ? data.SecurityItems
                     : key == "defender" ? data.DefenderItems : data.UpdateItems;
                 var items = source
                     .OrderBy(i => i.Area, StringComparer.CurrentCultureIgnoreCase).ThenBy(i => i.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
-                UpdateChips(items);
+                UpdateChips(items.Select(i => i.SourceKind).ToList());
                 policyView = new ListCollectionView(items);
                 policyView.GroupDescriptions.Add(new PropertyGroupDescription("Area"));
                 policyView.Filter = o => (kindFilter.Length == 0 || ((PolicyItem)o).SourceKind == kindFilter) && MatchesSearch(((PolicyItem)o).SearchText);
@@ -1939,29 +2377,33 @@ namespace PolicyViewer
             UpdateCount();
         }
 
-        void UpdateChips(List<PolicyItem> items)
+        void UpdateChips(List<string> sourceKinds)
         {
             string[] kinds = { "", "MDM", "GPO", "REG", "WU", "EFF" };
             string[] labels = { "All", "Intune", "GPO", "Registry", "Windows Update", "Effective state" };
             var chips = F<Panel>("Chips").Children.OfType<RadioButton>().ToList();
             for (int i = 0; i < chips.Count; i++)
             {
-                int n = kinds[i].Length == 0 ? items.Count : items.Count(x => x.SourceKind == kinds[i]);
+                int n = kinds[i].Length == 0 ? sourceKinds.Count : sourceKinds.Count(x => x == kinds[i]);
                 chips[i].Content = labels[i] + "  " + n;
                 chips[i].Visibility = n == 0 && i > 0 ? Visibility.Collapsed : Visibility.Visible;
             }
             if (chips.Any(c => c.IsChecked == true && c.Visibility != Visibility.Visible)) chips[0].IsChecked = true;
         }
 
+        string[] searchTerms = new string[0];
+
         bool MatchesSearch(string text)
         {
-            string q = searchBox.Text.Trim().ToLowerInvariant();
-            return q.Length == 0 || q.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries).All(text.Contains);
+            return searchTerms.All(text.Contains);
         }
 
         void RefreshFilter()
         {
+            // Split once per keystroke instead of once per row
+            searchTerms = searchBox.Text.Trim().ToLowerInvariant().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
             if (page == "history") { if (historyView != null) historyView.Refresh(); }
+            else if (page == "errors") { if (errorView != null) errorView.Refresh(); }
             else if (policyView != null) policyView.Refresh();
             UpdateCount();
         }
@@ -1971,6 +2413,11 @@ namespace PolicyViewer
             var count = F<TextBlock>("CountText");
             if (data == null) { count.Text = ""; return; }
             if (page == "history" && historyView != null) count.Text = historyView.Count + " of " + data.History.Count + " entries";
+            else if (page == "errors" && errorView != null)
+            {
+                count.Text = errorView.Count + " of " + data.Errors.Count + " items";
+                F<FrameworkElement>("ErrorsEmpty").Visibility = errorView.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            }
             else if (policyView != null && page != "summary")
             {
                 count.Text = policyView.Count + " of " + policyView.SourceCollection.Cast<object>().Count() + " settings";
@@ -2045,11 +2492,13 @@ namespace PolicyViewer
         void TakeScreenshots()
         {
             Directory.CreateDirectory(screenshotDir);
-            var navs = new[] { "NavSummary", "NavUser", "NavMachine", "NavSecurity", "NavDefender", "NavUpdates", "NavHistory" };
+            var navs = new[] { "NavSummary", "NavUser", "NavMachine", "NavSecurity", "NavDefender", "NavUpdates", "NavErrors", "NavHistory" };
             foreach (string nav in navs)
             {
                 F<RadioButton>(nav).IsChecked = true;
-                if (page != "summary" && page != "history" && policyView != null && policyView.Count > 0)
+                if (page == "errors" && errorView != null && errorView.Count > 0)
+                    errorGrid.SelectedItem = errorView.GetItemAt(0);
+                else if (page != "summary" && page != "history" && page != "errors" && policyView != null && policyView.Count > 0)
                     policyGrid.SelectedItem = policyView.GetItemAt(Math.Min(1, policyView.Count - 1));
                 root.UpdateLayout();
                 Dispatcher.Invoke(new Action(delegate { }), DispatcherPriority.Background);

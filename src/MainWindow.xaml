@@ -424,6 +424,8 @@
         <RadioButton x:Name="NavSecurity" Style="{StaticResource NavButton}" Tag="&#xE72E;" Content="Security"/>
         <RadioButton x:Name="NavDefender" Style="{StaticResource NavButton}" Tag="&#xE83D;" Content="Defender"/>
         <RadioButton x:Name="NavUpdates" Style="{StaticResource NavButton}" Tag="&#xE895;" Content="Updates"/>
+        <TextBlock Text="DIAGNOSTICS" Foreground="#56627A" FontSize="10.5" FontWeight="SemiBold" Margin="28,18,0,6"/>
+        <RadioButton x:Name="NavErrors" Style="{StaticResource NavButton}" Tag="&#xE7BA;" Content="Errors"/>
         <TextBlock Text="WINDOWS UPDATE" Foreground="#56627A" FontSize="10.5" FontWeight="SemiBold" Margin="28,18,0,6"/>
         <RadioButton x:Name="NavHistory" Style="{StaticResource NavButton}" Tag="&#xE81C;" Content="History"/>
       </StackPanel>
@@ -486,7 +488,7 @@
 
         <Grid Margin="0,0,-16,16">
           <Grid.ColumnDefinitions>
-            <ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/>
+            <ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/>
           </Grid.ColumnDefinitions>
           <Border x:Name="CardUser" Style="{StaticResource StatCard}">
             <StackPanel>
@@ -528,7 +530,17 @@
               <TextBlock x:Name="StatUpdatesSub" Foreground="#64748B" FontSize="12" Margin="0,2,0,0" TextWrapping="Wrap"/>
             </StackPanel>
           </Border>
-          <Border x:Name="CardHistory" Grid.Column="4" Style="{StaticResource StatCard}">
+          <Border x:Name="CardErrors" Grid.Column="4" Style="{StaticResource StatCard}">
+            <StackPanel>
+              <Border Width="36" Height="36" CornerRadius="18" Background="#FEE2E2" HorizontalAlignment="Left">
+                <TextBlock Text="&#xE7BA;" FontFamily="Segoe MDL2 Assets" Foreground="#B91C1C" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              </Border>
+              <TextBlock x:Name="StatErrors" Text="–" FontSize="30" FontWeight="SemiBold" Foreground="#0F172A" Margin="0,12,0,0"/>
+              <TextBlock Text="Policy errors" Foreground="#334155" FontWeight="SemiBold"/>
+              <TextBlock x:Name="StatErrorsSub" Foreground="#64748B" FontSize="12" Margin="0,2,0,0" TextWrapping="Wrap"/>
+            </StackPanel>
+          </Border>
+          <Border x:Name="CardHistory" Grid.Column="5" Style="{StaticResource StatCard}">
             <StackPanel>
               <Border Width="36" Height="36" CornerRadius="18" Background="#FEF3C7" HorizontalAlignment="Left">
                 <TextBlock Text="&#xE81C;" FontFamily="Segoe MDL2 Assets" Foreground="#B45309" FontSize="16" HorizontalAlignment="Center" VerticalAlignment="Center"/>
@@ -757,6 +769,61 @@
         </Border>
       </Grid>
     </Grid>
+
+    <!-- Errors page: select a row to see the full details -->
+    <Border x:Name="PageErrors" Grid.Row="2" Style="{StaticResource Card}" Padding="0" Margin="32,0,32,28" ClipToBounds="True" Visibility="Collapsed">
+      <Grid>
+        <DataGrid x:Name="ErrorGrid" Margin="1" RowHeight="NaN" MinRowHeight="48" RowDetailsVisibilityMode="VisibleWhenSelected">
+          <DataGrid.Columns>
+            <DataGridTextColumn Header="LAST SEEN" Binding="{Binding TimeText}" SortMemberPath="Time" Width="140" ElementStyle="{StaticResource CellTextMuted}"/>
+            <DataGridTemplateColumn Header="SOURCE" Width="130" SortMemberPath="SourceShort">
+              <DataGridTemplateColumn.CellTemplate>
+                <DataTemplate>
+                  <ContentControl Content="{Binding}" ContentTemplate="{StaticResource SourceBadge}" VerticalAlignment="Center"/>
+                </DataTemplate>
+              </DataGridTemplateColumn.CellTemplate>
+            </DataGridTemplateColumn>
+            <DataGridTemplateColumn Header="POLICY / ITEM" Width="*" SortMemberPath="Name">
+              <DataGridTemplateColumn.CellTemplate>
+                <DataTemplate>
+                  <StackPanel VerticalAlignment="Center" Margin="0,4">
+                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold" Foreground="#0F172A" TextWrapping="Wrap"/>
+                    <TextBlock Text="{Binding Area}" Foreground="#64748B" FontSize="12" TextTrimming="CharacterEllipsis"/>
+                  </StackPanel>
+                </DataTemplate>
+              </DataGridTemplateColumn.CellTemplate>
+            </DataGridTemplateColumn>
+            <DataGridTemplateColumn Header="WHY" Width="2*" SortMemberPath="Reason">
+              <DataGridTemplateColumn.CellTemplate>
+                <DataTemplate>
+                  <TextBlock Text="{Binding Reason}" Foreground="#334155" TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,4"/>
+                </DataTemplate>
+              </DataGridTemplateColumn.CellTemplate>
+            </DataGridTemplateColumn>
+            <DataGridTextColumn Header="CODE" Binding="{Binding Code}" Width="100" ElementStyle="{StaticResource CellTextMuted}"/>
+            <DataGridTextColumn Header="TIMES" Binding="{Binding CountText}" SortMemberPath="Count" Width="60" ElementStyle="{StaticResource CellTextMuted}"/>
+            <DataGridTemplateColumn Header="RESULT" Width="120" SortMemberPath="ResultKind">
+              <DataGridTemplateColumn.CellTemplate>
+                <DataTemplate>
+                  <ContentControl Content="{Binding}" ContentTemplate="{StaticResource ResultBadge}" VerticalAlignment="Center"/>
+                </DataTemplate>
+              </DataGridTemplateColumn.CellTemplate>
+            </DataGridTemplateColumn>
+          </DataGrid.Columns>
+          <DataGrid.RowDetailsTemplate>
+            <DataTemplate>
+              <Border Background="#F8FAFC" BorderBrush="#E5E9F0" BorderThickness="0,1,0,0" Padding="16,10">
+                <TextBox Text="{Binding Details, Mode=OneWay}" IsReadOnly="True" BorderThickness="0" Background="Transparent" TextWrapping="Wrap" FontFamily="Consolas" FontSize="12" Foreground="#334155"/>
+              </Border>
+            </DataTemplate>
+          </DataGrid.RowDetailsTemplate>
+        </DataGrid>
+        <StackPanel x:Name="ErrorsEmpty" VerticalAlignment="Center" HorizontalAlignment="Center" Visibility="Collapsed">
+          <TextBlock Text="&#xE73E;" FontFamily="Segoe MDL2 Assets" FontSize="34" Foreground="#CBD5E1" HorizontalAlignment="Center"/>
+          <TextBlock Text="No policy errors found" Foreground="#64748B" Margin="0,10,0,0" HorizontalAlignment="Center"/>
+        </StackPanel>
+      </Grid>
+    </Border>
 
     <!-- Windows Update history page -->
     <Border x:Name="PageHistory" Grid.Row="2" Style="{StaticResource Card}" Padding="0" Margin="32,0,32,28" ClipToBounds="True" Visibility="Collapsed">

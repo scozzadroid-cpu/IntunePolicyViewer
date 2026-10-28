@@ -1,3 +1,2 @@
-*.exe
-*.pdb
-*.html
+PolicyViewer.exe
+*.error.txt
