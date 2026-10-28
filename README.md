@@ -26,8 +26,8 @@ Identifying data (PC, user, tenant, serial number, firewall rules) is anonymized
 | ![User policies](docs/screenshots/User.png) | ![Security](docs/screenshots/Security.png) |
 | **Microsoft Defender** | **Updates** |
 | ![Microsoft Defender](docs/screenshots/Defender.png) | ![Updates](docs/screenshots/Updates.png) |
-| **Windows Update history** | |
-| ![History](docs/screenshots/History.png) | |
+| **Windows Update history** | **Policy errors** |
+| ![History](docs/screenshots/History.png) | ![Policy errors](docs/screenshots/Errors.png) |
 
 ## Usage
 

@@ -411,11 +411,12 @@ namespace PolicyViewer
             }
         }
 
+        // The "Z" suffix is misleading: Windows stores these values in local time (they match the MDM event log timestamps)
         static DateTime? ParseSyncTime(string v)
         {
             DateTime d;
-            if (v != null && DateTime.TryParseExact(v, "yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out d))
-                return d.ToLocalTime();
+            if (v != null && DateTime.TryParseExact(v, "yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out d))
+                return d;
             return null;
         }
 
