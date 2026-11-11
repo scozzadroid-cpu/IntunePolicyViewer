@@ -415,7 +415,7 @@
         <TextBlock x:Name="SideFooter" Foreground="#6B778F" FontSize="11.5" TextWrapping="Wrap" LineHeight="18"/>
       </StackPanel>
 
-      <StackPanel>
+      <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel>
         <TextBlock Text="OVERVIEW" Foreground="#56627A" FontSize="10.5" FontWeight="SemiBold" Margin="28,0,0,6"/>
         <RadioButton x:Name="NavSummary" Style="{StaticResource NavButton}" Tag="&#xE80F;" Content="Summary" IsChecked="True"/>
         <TextBlock Text="POLICIES" Foreground="#56627A" FontSize="10.5" FontWeight="SemiBold" Margin="28,18,0,6"/>
@@ -426,9 +426,10 @@
         <RadioButton x:Name="NavUpdates" Style="{StaticResource NavButton}" Tag="&#xE895;" Content="Updates"/>
         <TextBlock Text="DIAGNOSTICS" Foreground="#56627A" FontSize="10.5" FontWeight="SemiBold" Margin="28,18,0,6"/>
         <RadioButton x:Name="NavErrors" Style="{StaticResource NavButton}" Tag="&#xE7BA;" Content="Errors"/>
+        <RadioButton x:Name="NavConflicts" Style="{StaticResource NavButton}" Tag="&#xE8AB;" Content="Conflicts"/>
         <TextBlock Text="WINDOWS UPDATE" Foreground="#56627A" FontSize="10.5" FontWeight="SemiBold" Margin="28,18,0,6"/>
         <RadioButton x:Name="NavHistory" Style="{StaticResource NavButton}" Tag="&#xE81C;" Content="History"/>
-      </StackPanel>
+      </StackPanel></ScrollViewer>
     </DockPanel>
   </Border>
 
@@ -820,7 +821,7 @@
         </DataGrid>
         <StackPanel x:Name="ErrorsEmpty" VerticalAlignment="Center" HorizontalAlignment="Center" Visibility="Collapsed">
           <TextBlock Text="&#xE73E;" FontFamily="Segoe MDL2 Assets" FontSize="34" Foreground="#CBD5E1" HorizontalAlignment="Center"/>
-          <TextBlock Text="No policy errors found" Foreground="#64748B" Margin="0,10,0,0" HorizontalAlignment="Center"/>
+          <TextBlock x:Name="ErrorsEmptyText" Text="No policy errors found" Foreground="#64748B" Margin="0,10,0,0" HorizontalAlignment="Center"/>
         </StackPanel>
       </Grid>
     </Border>

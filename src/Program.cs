@@ -163,6 +163,9 @@ namespace PolicyViewer
         public string Details { get; set; }
         public int Count { get; set; }
         public DateTime FirstTime { get; set; }  // oldest occurrence, when the same error was logged repeatedly
+        public string Category { get; set; }     // error, conflict (same setting configured by more than one source)
+
+        public ErrorItem() { Category = "error"; }
 
         public string CountText { get { return Count > 1 ? Count + "×" : ""; } }
         public string SearchText { get { return string.Join("\n", new[] { Name, Area, Code, Reason, Result, SourceShort, Details }.Where(x => x != null)).ToLowerInvariant(); } }
@@ -251,6 +254,8 @@ namespace PolicyViewer
             Step(s, progress, "Reading Intune errors (MDM event log)", delegate { CollectMdmErrors(s); });
             Step(s, progress, "Checking Intune sync result", delegate { CollectSyncErrors(s); });
             Step(s, progress, "Checking failed Windows Updates", delegate { CollectUpdateErrors(s); });
+            Step(s, progress, "Checking Intune policy conflicts", delegate { CollectMdmConflicts(s, "Device", "Machine"); CollectMdmConflicts(s, s.UserSid, "User"); });
+            Step(s, progress, "Checking Intune / Group Policy conflicts", delegate { CollectGpoConflicts(s); });
 
             if (progress != null) progress("Waiting for Group Policy results (gpresult)");
             Task.WaitAll(gpTasks.ToArray());
@@ -1141,6 +1146,153 @@ namespace PolicyViewer
                 });
             }
         }
+
+        #region Conflicts
+
+        // Value as AddMdmItem shows it
+        static string MdmValueText(string area, string name, object raw, bool isAdmx)
+        {
+            return (isAdmx ? DecodeAdmx(raw as string) : Descriptions.Decode(name, raw)) ?? FormatValue(raw) ?? "(not readable)";
+        }
+
+        // The same MDM setting written by more than one provider (e.g. two enrollments or Intune and the WUfB Deployment Service).
+        // Windows keeps one winner; the other values are silently ignored.
+        static void CollectMdmConflicts(Snapshot s, string providerScope, string scope)
+        {
+            if (string.IsNullOrEmpty(providerScope)) return;
+            var sets = new Dictionary<string, List<KeyValuePair<string, object>>>(StringComparer.OrdinalIgnoreCase);
+            using (var providers = Registry.LocalMachine.OpenSubKey(PmRoot + @"\providers"))
+            {
+                if (providers == null) return;
+                foreach (string id in providers.GetSubKeyNames())
+                {
+                    using (var root = providers.OpenSubKey(id + @"\default\" + providerScope))
+                    {
+                        if (root == null) continue;
+                        foreach (string area in root.GetSubKeyNames())
+                        {
+                            if (area.Equals("knobs", StringComparison.OrdinalIgnoreCase)) continue;
+                            using (var ak = root.OpenSubKey(area))
+                            {
+                                if (ak == null) continue;
+                                foreach (string vn in ak.GetValueNames())
+                                {
+                                    if (PmSuffixes.Any(suf => vn.EndsWith(suf, StringComparison.OrdinalIgnoreCase))) continue;
+                                    List<KeyValuePair<string, object>> list;
+                                    string key = area + "\\" + vn;
+                                    if (!sets.TryGetValue(key, out list)) sets[key] = list = new List<KeyValuePair<string, object>>();
+                                    list.Add(new KeyValuePair<string, object>(id, ak.GetValue(vn)));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            string scopeKey = scope == "User" ? providerScope : "device";
+            foreach (var kv in sets)
+            {
+                if (kv.Value.Count < 2) continue;
+                int sep = kv.Key.IndexOf('\\');
+                string area = kv.Key.Substring(0, sep), name = kv.Key.Substring(sep + 1);
+                bool isAdmx = area.Contains("~Policy~") || area.StartsWith("ADMX_", StringComparison.OrdinalIgnoreCase);
+                var texts = kv.Value.Select(p => new { Id = p.Key, Label = ProviderLabel(s, p.Key), Text = MdmValueText(area, name, p.Value, isAdmx) }).ToList();
+                bool differ = texts.Select(t => t.Text).Distinct().Count() > 1;
+
+                string winner = null;
+                using (var ck = Registry.LocalMachine.OpenSubKey(PmRoot + @"\current\" + scopeKey + "\\" + area))
+                    if (ck != null) winner = ck.GetValue(name + "_WinningProvider") as string;
+                var win = texts.FirstOrDefault(t => string.Equals(t.Id, winner, StringComparison.OrdinalIgnoreCase));
+
+                var d = new StringBuilder();
+                foreach (var t in texts)
+                    d.AppendLine((t == win ? "★ " : "  ") + t.Label + ": " + t.Text + (t.Label.StartsWith("Provider ") ? "" : "  (" + t.Id + ")"));
+                d.AppendLine();
+                d.AppendLine("★ = winning provider: its value is the one Windows applies");
+                d.Append("Path: HKLM\\" + PmRoot + @"\providers\<provider>\default\" + providerScope + "\\" + area + "\\" + name);
+
+                string reason = string.Join("; ", texts.Select(t => t.Label + " sets " + Shorten(t.Text, 60)))
+                    + (win != null ? ". Applied: " + Shorten(win.Text, 60) + " (" + win.Label + ")." : ".");
+                if (!differ) reason = "Set by " + string.Join(" and ", texts.Select(t => t.Label)) + " with the same value.";
+
+                s.Errors.Add(new ErrorItem
+                {
+                    Category = "conflict",
+                    SourceKind = "MDM",
+                    SourceShort = "Intune",
+                    Result = differ ? "Conflict" : "Same value",
+                    ResultKind = differ ? "WARN" : "INFO",
+                    Area = (scope == "User" ? "User · " : "") + PrettyArea(area),
+                    Name = name,
+                    Reason = reason,
+                    Details = d.ToString().TrimEnd(),
+                    Count = 1,
+                });
+            }
+        }
+
+        // A setting configured both by Intune and by Group Policy (same registry value). By default Group Policy wins;
+        // Intune wins only when ControlPolicyConflict/MDMWinsOverGP is 1.
+        static void CollectGpoConflicts(Snapshot s)
+        {
+            object wins = null;
+            using (var k = Registry.LocalMachine.OpenSubKey(PmRoot + @"\current\device\ControlPolicyConflict"))
+                if (k != null) wins = k.GetValue("MDMWinsOverGP");
+            bool mdmWins = wins != null && Convert.ToString(wins, CultureInfo.InvariantCulture) == "1";
+
+            foreach (var item in s.Items.Where(i => i.SourceKind == "MDM" && i.Scope == "Machine" && i.Details != null && i.Path != null).ToList())
+            {
+                Match gm = Regex.Match(item.Details, @"Equivalent GPO: HKLM\\(.+)\\([^\\\r\n]+)\s*$", RegexOptions.Multiline);
+                if (!gm.Success) continue;
+                object gpRaw = null, mdmRaw = null;
+                using (var gk = Registry.LocalMachine.OpenSubKey(gm.Groups[1].Value))
+                    if (gk != null) gpRaw = gk.GetValue(gm.Groups[2].Value.Trim());
+                if (gpRaw == null) continue;
+
+                string valuePath = item.Path.StartsWith(@"HKLM\") ? item.Path.Substring(5) : null;
+                int cut = valuePath == null ? -1 : valuePath.LastIndexOf('\\');
+                if (cut > 0)
+                    using (var mk = Registry.LocalMachine.OpenSubKey(valuePath.Substring(0, cut)))
+                        if (mk != null) mdmRaw = mk.GetValue(valuePath.Substring(cut + 1));
+
+                string gpText = FormatValue(gpRaw) ?? "(not readable)";
+                bool comparable = mdmRaw != null && !(mdmRaw is string && ((string)mdmRaw).StartsWith("<")) && mdmRaw.GetType() == gpRaw.GetType();
+                bool differ = comparable && FormatValue(mdmRaw) != gpText;
+                string mdmText = item.Value;
+
+                var d = new StringBuilder();
+                d.AppendLine((mdmWins ? "★ " : "  ") + "Intune: " + mdmText);
+                d.AppendLine((mdmWins ? "  " : "★ ") + "Group Policy: " + gpText + "  (HKLM\\" + gm.Groups[1].Value + "\\" + gm.Groups[2].Value.Trim() + ")");
+                d.AppendLine();
+                d.AppendLine("★ = value Windows applies. ControlPolicyConflict/MDMWinsOverGP = " + (wins == null ? "not set (Group Policy wins)" : wins.ToString()));
+                d.Append("Intune path: " + item.Path);
+
+                string winner = mdmWins ? "Intune" : "Group Policy";
+                s.Errors.Add(new ErrorItem
+                {
+                    Category = "conflict",
+                    SourceKind = "GPO",
+                    SourceShort = "Intune + GPO",
+                    Result = differ ? "Conflict" : comparable ? "Same value" : "Both set",
+                    ResultKind = differ ? "WARN" : "INFO",
+                    Area = item.Area,
+                    Name = item.Name,
+                    Reason = differ ? "Intune sets " + Shorten(mdmText, 50) + ", Group Policy sets " + Shorten(gpText, 50) + ". Applied: " + winner + "."
+                        : comparable ? "Configured by both Intune and Group Policy with the same value."
+                        : "Configured by both Intune and Group Policy; the values cannot be compared automatically. " + winner + " wins.",
+                    Details = d.ToString().TrimEnd(),
+                    Count = 1,
+                });
+            }
+        }
+
+        static string Shorten(string t, int max)
+        {
+            t = Regex.Replace(t ?? "", @"\s+", " ");
+            return t.Length > max ? t.Substring(0, max) + "…" : t;
+        }
+
+        #endregion
 
         static void AddGpoError(Snapshot s, string scope, string result, string kind, string area, string name, string code, string reason, string details, DateTime time)
         {
@@ -2126,17 +2278,8 @@ namespace PolicyViewer
             PolicySection(sb, "Microsoft Defender", s.DefenderItems);
             PolicySection(sb, "Update policies", s.UpdateItems);
 
-            sb.Append("<section><h2>Policy errors (" + s.Errors.Count + ")</h2>");
-            if (s.Errors.Count == 0) sb.Append("<div>No policy errors found.</div>");
-            else
-            {
-                sb.Append("<table class=\"f\"><tr><th>Last seen</th><th>Source</th><th style=\"width:24%\">Policy / item</th><th style=\"width:40%\">Why</th><th>Code</th><th>Times</th><th>Result</th></tr>");
-                foreach (var e in s.Errors)
-                    sb.Append("<tr><td>" + H(e.TimeText) + "</td><td><span class=\"b " + e.SourceKind + "\">" + H(e.SourceShort) + "</span></td><td><b>" + H(e.Name) + "</b><div class=\"desc\">" + H(e.Area)
-                        + "</div></td><td>" + H(e.Reason) + "<div class=\"desc\">" + H(e.Details).Replace("\n", "<br>") + "</div></td><td>" + H(e.Code) + "</td><td>" + H(e.CountText) + "</td><td>" + H(e.Result) + "</td></tr>");
-                sb.Append("</table>");
-            }
-            sb.Append("</section>");
+            DiagnosticsSection(sb, "Policy errors", "No policy errors found.", s.Errors.Where(e => e.Category == "error").ToList());
+            DiagnosticsSection(sb, "Policy conflicts", "No policy conflicts found.", s.Errors.Where(e => e.Category == "conflict").ToList());
 
             sb.Append("<section><h2>Windows Update history</h2><table class=\"f\"><tr><th>Date</th><th>Update</th><th>Operation</th><th>Result</th></tr>");
             foreach (var h in s.History)
@@ -2145,6 +2288,21 @@ namespace PolicyViewer
             sb.Append("<script>function f(q){q=q.toLowerCase();document.querySelectorAll('table.f tr').forEach(function(r){if(r.querySelector('th'))return;r.style.display=r.textContent.toLowerCase().indexOf(q)<0?'none':''})}</script>");
             sb.Append("</body></html>");
             File.WriteAllText(path, sb.ToString(), new UTF8Encoding(true));
+        }
+
+        static void DiagnosticsSection(StringBuilder sb, string title, string empty, List<ErrorItem> items)
+        {
+            sb.Append("<section><h2>" + H(title) + " (" + items.Count + ")</h2>");
+            if (items.Count == 0) sb.Append("<div>" + H(empty) + "</div>");
+            else
+            {
+                sb.Append("<table class=\"f\"><tr><th>Last seen</th><th>Source</th><th style=\"width:24%\">Policy / item</th><th style=\"width:40%\">Why</th><th>Code</th><th>Times</th><th>Result</th></tr>");
+                foreach (var e in items)
+                    sb.Append("<tr><td>" + H(e.TimeText) + "</td><td><span class=\"b " + e.SourceKind + "\">" + H(e.SourceShort) + "</span></td><td><b>" + H(e.Name) + "</b><div class=\"desc\">" + H(e.Area)
+                        + "</div></td><td>" + H(e.Reason) + "<div class=\"desc\">" + H(e.Details).Replace("\n", "<br>") + "</div></td><td>" + H(e.Code) + "</td><td>" + H(e.CountText) + "</td><td>" + H(e.Result) + "</td></tr>");
+                sb.Append("</table>");
+            }
+            sb.Append("</section>");
         }
 
         static void InfoSection(StringBuilder sb, string title, List<InfoRow> rows)
@@ -2224,6 +2382,7 @@ namespace PolicyViewer
             NavHook("NavDefender", "defender");
             NavHook("NavUpdates", "updates");
             NavHook("NavErrors", "errors");
+            NavHook("NavConflicts", "conflicts");
             NavHook("NavHistory", "history");
             CardHook("CardErrors", "NavErrors");
             CardHook("CardUser", "NavUser");
@@ -2304,9 +2463,11 @@ namespace PolicyViewer
             F<TextBlock>("StatUpdates").Text = s.UpdateItems.Count().ToString();
             F<TextBlock>("StatUpdatesSub").Text = string.Format("Intune {0} · WUfB DS {1} · effective state {2}",
                 s.UpdateItems.Count(i => i.SourceKind == "MDM"), s.UpdateItems.Count(i => i.Source == "WUfB Deployment Service"), s.UpdateItems.Count(i => i.SourceShort == "WU state"));
-            int errKo = s.Errors.Count(e => e.ResultKind == "KO"), errWarn = s.Errors.Count(e => e.ResultKind == "WARN"), errInfo = s.Errors.Count(e => e.ResultKind == "INFO");
+            var errs = s.Errors.Where(e => e.Category == "error").ToList();
+            int errKo = errs.Count(e => e.ResultKind == "KO"), errWarn = errs.Count(e => e.ResultKind == "WARN");
+            int conflicts = s.Errors.Count(e => e.Category == "conflict" && e.ResultKind == "WARN");
             F<TextBlock>("StatErrors").Text = errKo.ToString();
-            F<TextBlock>("StatErrorsSub").Text = string.Format("{0} warnings · {1} info", errWarn, errInfo);
+            F<TextBlock>("StatErrorsSub").Text = string.Format("{0} warnings · {1} conflicts", errWarn, conflicts);
             var installed = s.History.Where(h => h.ResultKind == "OK" && h.Operation == "Install").ToList();
             F<TextBlock>("StatHistory").Text = installed.Count.ToString();
             F<TextBlock>("StatHistorySub").Text = installed.Count > 0 ? "Latest: " + installed[0].Date.ToString(Fmt.Date) : "No installs recorded";
@@ -2326,7 +2487,8 @@ namespace PolicyViewer
             historyView.Filter = o => MatchesSearch(((HistoryItem)o).SearchText);
             historyGrid.ItemsSource = historyView;
             errorView = new ListCollectionView(s.Errors);
-            errorView.Filter = o => (kindFilter.Length == 0 || ((ErrorItem)o).SourceKind == kindFilter) && MatchesSearch(((ErrorItem)o).SearchText);
+            errorView.Filter = o => ((ErrorItem)o).Category == (page == "conflicts" ? "conflict" : "error")
+                && (kindFilter.Length == 0 || ((ErrorItem)o).SourceKind == kindFilter) && MatchesSearch(((ErrorItem)o).SearchText);
             errorGrid.ItemsSource = errorView;
             ShowPage(page);
         }
@@ -2340,6 +2502,7 @@ namespace PolicyViewer
             { "defender", new[] { "Microsoft Defender", "Defender policies deployed by Intune/GPO, effective antivirus configuration, ASR rules and exclusions." } },
             { "updates", new[] { "Update policies", "Update rings, deferrals, deadlines and Windows Update effective state." } },
             { "errors", new[] { "Policy errors", "Policies that failed or were not applied, and why: Intune command failures (last 30 days), last sync result, Group Policy processing and failed Windows Update installs. Select a row for details." } },
+            { "conflicts", new[] { "Policy conflicts", "Settings configured by more than one source: several Intune providers, or Intune and Group Policy on the same registry value. The row shows which value Windows applies; select it for every value." } },
             { "history", new[] { "Update history", "Latest installs recorded by Windows Update on this PC." } },
         };
 
@@ -2352,15 +2515,24 @@ namespace PolicyViewer
             F<FrameworkElement>("PageSummary").Visibility = key == "summary" ? Visibility.Visible : Visibility.Collapsed;
             F<FrameworkElement>("PagePolicies").Visibility = policies ? Visibility.Visible : Visibility.Collapsed;
             F<FrameworkElement>("PageHistory").Visibility = key == "history" ? Visibility.Visible : Visibility.Collapsed;
-            F<FrameworkElement>("PageErrors").Visibility = key == "errors" ? Visibility.Visible : Visibility.Collapsed;
+            bool errorPage = key == "errors" || key == "conflicts";
+            F<FrameworkElement>("PageErrors").Visibility = errorPage ? Visibility.Visible : Visibility.Collapsed;
             F<FrameworkElement>("Toolbar").Visibility = key == "summary" ? Visibility.Collapsed : Visibility.Visible;
-            F<FrameworkElement>("Chips").Visibility = policies || key == "errors" ? Visibility.Visible : Visibility.Collapsed;
+            F<FrameworkElement>("Chips").Visibility = policies || errorPage ? Visibility.Visible : Visibility.Collapsed;
             var cards = F<ItemsControl>("StatusCards");
             cards.Visibility = key == "updates" || key == "security" || key == "defender" ? Visibility.Visible : Visibility.Collapsed;
             if (data == null) return;
             cards.ItemsSource = key == "updates" ? data.UpdateStatus : key == "security" ? data.SecurityStatus : key == "defender" ? data.DefenderStatus : null;
 
-            if (key == "errors") UpdateChips(data.Errors.Select(e => e.SourceKind).ToList());
+            if (errorPage)
+            {
+                // The errors and conflicts pages share one grid: time, code and count only apply to errors
+                string category = key == "conflicts" ? "conflict" : "error";
+                errorGrid.Columns[0].Visibility = errorGrid.Columns[4].Visibility = errorGrid.Columns[5].Visibility = key == "errors" ? Visibility.Visible : Visibility.Collapsed;
+                errorGrid.Columns[3].Header = key == "errors" ? "WHY" : "VALUES AND WINNER";
+                if (errorView != null) errorView.Refresh();
+                UpdateChips(data.Errors.Where(e => e.Category == category).Select(e => e.SourceKind).ToList());
+            }
             if (policies)
             {
                 var source = key == "user" ? data.UserItems : key == "machine" ? data.MachineItems : key == "security" ? data.SecurityItems
@@ -2404,7 +2576,7 @@ namespace PolicyViewer
             // Split once per keystroke instead of once per row
             searchTerms = searchBox.Text.Trim().ToLowerInvariant().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
             if (page == "history") { if (historyView != null) historyView.Refresh(); }
-            else if (page == "errors") { if (errorView != null) errorView.Refresh(); }
+            else if (page == "errors" || page == "conflicts") { if (errorView != null) errorView.Refresh(); }
             else if (policyView != null) policyView.Refresh();
             UpdateCount();
         }
@@ -2414,9 +2586,11 @@ namespace PolicyViewer
             var count = F<TextBlock>("CountText");
             if (data == null) { count.Text = ""; return; }
             if (page == "history" && historyView != null) count.Text = historyView.Count + " of " + data.History.Count + " entries";
-            else if (page == "errors" && errorView != null)
+            else if ((page == "errors" || page == "conflicts") && errorView != null)
             {
-                count.Text = errorView.Count + " of " + data.Errors.Count + " items";
+                string category = page == "conflicts" ? "conflict" : "error";
+                count.Text = errorView.Count + " of " + data.Errors.Count(e => e.Category == category) + " items";
+                F<TextBlock>("ErrorsEmptyText").Text = page == "conflicts" ? "No policy conflicts found" : "No policy errors found";
                 F<FrameworkElement>("ErrorsEmpty").Visibility = errorView.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
             }
             else if (policyView != null && page != "summary")
@@ -2493,13 +2667,13 @@ namespace PolicyViewer
         void TakeScreenshots()
         {
             Directory.CreateDirectory(screenshotDir);
-            var navs = new[] { "NavSummary", "NavUser", "NavMachine", "NavSecurity", "NavDefender", "NavUpdates", "NavErrors", "NavHistory" };
+            var navs = new[] { "NavSummary", "NavUser", "NavMachine", "NavSecurity", "NavDefender", "NavUpdates", "NavErrors", "NavConflicts", "NavHistory" };
             foreach (string nav in navs)
             {
                 F<RadioButton>(nav).IsChecked = true;
-                if (page == "errors" && errorView != null && errorView.Count > 0)
+                if ((page == "errors" || page == "conflicts") && errorView != null && errorView.Count > 0)
                     errorGrid.SelectedItem = errorView.GetItemAt(0);
-                else if (page != "summary" && page != "history" && page != "errors" && policyView != null && policyView.Count > 0)
+                else if (page != "summary" && page != "history" && page != "errors" && page != "conflicts" && policyView != null && policyView.Count > 0)
                     policyGrid.SelectedItem = policyView.GetItemAt(Math.Min(1, policyView.Count - 1));
                 root.UpdateLayout();
                 Dispatcher.Invoke(new Action(delegate { }), DispatcherPriority.Background);

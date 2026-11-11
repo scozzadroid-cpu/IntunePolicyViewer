@@ -10,6 +10,7 @@ Windows application (single `.exe`, no installation) that shows the **name and d
 | **Defender** | Defender policies from Intune/GPO, effective antivirus configuration, ASR rules by name, exclusions, status (real-time, tamper protection, signatures, Defender for Endpoint onboarding) |
 | **Updates** | Update rings (deferrals, deadlines, active hours, channel), Windows Update for Business Deployment Service, effective state computed by Windows Update, WSUS/GPO policies |
 | **Errors** | Policies that failed or were not applied, with the reason: Intune command failures (MDM diagnostics event log, last 30 days), result of the last Intune sync, Group Policy not applied (security/WMI filter, invalid GPO), Group Policy extensions and events with errors, failed Windows Update installs. Repeated errors are grouped with a count; select a row for event, CSP URI and current value |
+| **Conflicts** | Settings configured by more than one source, with the value Windows applies: several Intune providers writing the same setting (winning provider marked), and Intune plus Group Policy on the same registry value (Group Policy wins unless `ControlPolicyConflict/MDMWinsOverGP` is 1). `gpresult` only lists the winning GPO, so two GPOs setting the same policy are not detected |
 
 Plus: device summary (Entra ID/AD join, tenant, last MDM sync), list of applied/filtered GPOs, **Windows Update history** and **HTML report export**.
 
@@ -28,6 +29,8 @@ Identifying data (PC, user, tenant, serial number, firewall rules) is anonymized
 | ![Microsoft Defender](docs/screenshots/Defender.png) | ![Updates](docs/screenshots/Updates.png) |
 | **Windows Update history** | **Policy errors** |
 | ![History](docs/screenshots/History.png) | ![Policy errors](docs/screenshots/Errors.png) |
+| **Policy conflicts** | |
+| ![Policy conflicts](docs/screenshots/Conflicts.png) | |
 
 ## Usage
 
